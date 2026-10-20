@@ -1,0 +1,11 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 浅色：荣耀 MagicOS 的留白感，卡片纯白、底色极浅灰 -->
+    <color name="bg">#F4F5F7</color>
+    <color name="surface">#FFFFFF</color>
+    <color name="brand">#0F3A72</color>
+    <color name="accent">#0F3A72</color>
+    <color name="text">#111318</color>
+    <color name="text_dim">#8A8F99</color>
+    <color name="ic_bg">#FAFCFE</color>
+</resources>

@@ -1,0 +1,41 @@
+﻿# ---------------------------------------------------------------- Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+
+# ---------------------------------------------------------------- 生成物
+# 可用 `python -m magicrri verify` 重建
+report/figures/
+report/images/
+report/luts/
+report/metrics.json
+
+# 测试素材 / 导出结果（体积大，且含个人拍摄内容）
+samples/
+*.mp4
+*.mov
+!docs/**/*.mp4
+
+# ---------------------------------------------------------------- 厂商受权 LUT
+# 荣耀、ARRI 的官方 LUT 仅限本机使用，整目录不入库（含 PDF 说明与 zip）。
+# 拉取方式：python -m magicrri assets fetch
+assets/luts/**
+!assets/luts/SOURCES.md
+# App 里烘焙后的链 LUT 是构建产物，同样不入库（要本地有 assets 才能重烤）
+android/app/src/main/assets/luts/*.cube
+
+# ---------------------------------------------------------------- Android
+android/build/
+android/app/build/
+android/.gradle/
+android/local.properties
+android/.idea/
+android/dist/*.apk
+*.apk.idsig
+
+# ---------------------------------------------------------------- 其它
+.DS_Store
+Thumbs.db

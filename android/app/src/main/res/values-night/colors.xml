@@ -1,0 +1,11 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 深色：OLED 友好，卡片略亮于底色 -->
+    <color name="bg">#0E1013</color>
+    <color name="surface">#1A1D22</color>
+    <color name="brand">#5A92D8</color>
+    <color name="accent">#5A92D8</color>
+    <color name="text">#FFFFFF</color>
+    <color name="text_dim">#98A0AA</color>
+    <color name="ic_bg">#0E1013</color>
+</resources>
