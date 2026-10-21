@@ -594,7 +594,7 @@ class MainActivity : Activity() {
             textSize = 11f
             setPadding(dp(9), dp(8), dp(9), dp(8))
         }
-        mfBtn.visibility = View.GONE          // 只有 MF 档才出现
+        mfBtn.visibility = View.INVISIBLE     // 默认不可见但占位：四个按钮位置不会动
         valueCol.addView(
             mfBtn,
             LinearLayout.LayoutParams(
@@ -1008,7 +1008,7 @@ class MainActivity : Activity() {
         val f = FOCUS_MODES[focusIndex]
         camera.setFocusMode(f)
         focusBtn.text = FOCUS_NAMES[focusIndex]
-        mfBtn.visibility = if (f == CameraEngine.Focus.MF) View.VISIBLE else View.GONE
+        mfBtn.visibility = if (f == CameraEngine.Focus.MF) View.VISIBLE else View.INVISIBLE
         if (openWheelKind == MF && f != CameraEngine.Focus.MF) closeWheel()
         updateWheelButtons()
     }
@@ -1051,58 +1051,40 @@ class MainActivity : Activity() {
         }
         val c = camera.controls
 
-        zoomBtn.visibility = View.VISIBLE
-        zoomBtn.alpha = if (c.hasZoom) 1f else 0.35f
-        zoomDial.isEnabled = c.hasZoom
+        // 四个数值按钮**永远都在**，位置固定不变：切档只改可用状态，不隐藏、不重排
+        for (b in listOf(zoomBtn, evBtn, shutterBtn, isoBtn)) b.visibility = View.VISIBLE
+
+        // AUTO 全自动：四个都只读（灰、点不开）
+        val autoMode = mode == CameraEngine.Mode.AUTO
+        fun setEnabled(b: TextView, w: WheelView, on: Boolean) {
+            b.alpha = if (on) 1f else 0.35f
+            b.isEnabled = on
+            w.isEnabled = on
+        }
+
+        setEnabled(zoomBtn, zoomDial, !autoMode && c.hasZoom)
+        setEnabled(evBtn, evDial, !autoMode && mode != CameraEngine.Mode.M && c.hasEv)
+        setEnabled(shutterBtn, shutterWheel, !autoMode)
+        setEnabled(isoBtn, isoWheel, !autoMode && mode == CameraEngine.Mode.M)
 
         when (mode) {
             CameraEngine.Mode.AUTO -> {
-                shutterBtn.visibility = View.GONE
-                isoBtn.visibility = View.GONE
-                evBtn.visibility = View.VISIBLE
-                evBtn.alpha = 1f
-                evBtn.isEnabled = true
-                evDial.isEnabled = c.hasEv
                 evDial.caption = "EV"
                 evDial.format = { v -> String.format("%+.1f", evFromValue(v)) }
-                evDial.value = if (c.hasEv && c.evMax > c.evMin) {
-                    ((camera.evIndex - c.evMin).toFloat() / (c.evMax - c.evMin)).coerceIn(0f, 1f)
-                } else 0.5f
             }
 
             CameraEngine.Mode.S -> {
-                shutterBtn.visibility = View.VISIBLE
-                isoBtn.visibility = View.VISIBLE
-                isoBtn.alpha = 0.35f          // S 档 ISO 只显示，按钮置灰点不开
-                isoBtn.isEnabled = false
-                isoWheel.isEnabled = false
-                shutterWheel.isEnabled = true
                 shutterWheel.value = shutterValueFromNs(camera.manualShutterNs)
                 isoWheel.value = isoValueFromIso(camera.sModeIso)
-
-                evBtn.visibility = View.VISIBLE
-                evBtn.alpha = 1f
-                evBtn.isEnabled = true
-                evDial.isEnabled = c.hasEv
                 evDial.caption = "EV"
                 evDial.format = { v -> String.format("%+.1f", evFromValue(v)) }
                 lastEv = evFromValue(evDial.value)
             }
 
             CameraEngine.Mode.M -> {
-                shutterBtn.visibility = View.VISIBLE
-                isoBtn.visibility = View.VISIBLE
-                isoBtn.alpha = 1f
-                isoBtn.isEnabled = true
-                isoWheel.isEnabled = true
-                shutterWheel.isEnabled = true
                 shutterWheel.value = shutterValueFromNs(camera.manualShutterNs)
                 isoWheel.value = isoValueFromIso(camera.manualIso)
-
-                evBtn.visibility = View.VISIBLE
-                evBtn.alpha = 0.35f           // M 档 EV 只是指示器，按钮置灰
-                evBtn.isEnabled = false
-                evDial.isEnabled = false
+                // M 档 EV 只是曝光指示器
                 evDial.caption = "曝光"
                 evDial.format = { v -> String.format("%+.1f", v * 4f - 2f) }
             }
