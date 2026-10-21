@@ -532,7 +532,7 @@ class GlPreview(
         private set
     @Volatile var lastLuma = -1f
 
-    /** 点测光时软件采样的位置（纹理坐标 0..1），默认中心 */
+    /** 点测光采样位置：**视图归一化坐标**（0..1，左上原点），默认中心 */
     @Volatile private var meterU = 0.5f
     @Volatile private var meterV = 0.5f
 

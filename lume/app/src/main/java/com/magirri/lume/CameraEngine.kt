@@ -201,12 +201,17 @@ class CameraEngine(private val context: Context) {
             }
             // AE 预拍收敛完成就复位，别一直挂着
             if (aePrecapture) {
+                val now = android.os.SystemClock.uptimeMillis()
+                val age = now - aePrecaptureAt
+                // 关键：刚置位时，上一帧的 AE_STATE 往往还是 CONVERGED，
+                // 立刻清掉等于预拍没发生 —— 至少挂 300ms 再接受 CONVERGED。
                 val aeState = result.get(CaptureResult.CONTROL_AE_STATE)
-                if (aeState == CaptureResult.CONTROL_AE_STATE_CONVERGED ||
+                val converged = aeState == CaptureResult.CONTROL_AE_STATE_CONVERGED ||
                     aeState == CaptureResult.CONTROL_AE_STATE_LOCKED
-                ) {
+                if (converged && age >= 300L) {
                     aePrecapture = false
                     aePrecaptureAt = 0L
+                    Log.i(TAG, "AE 预拍完成，用时 ${age}ms")
                     reapply()
                 }
             }
@@ -484,6 +489,7 @@ class CameraEngine(private val context: Context) {
         // 只改 AE 区域 HAL 未必会重新收敛，要踢一次 PRECAPTURE 让它重新测光，
         // 否则表现就是"有时候有效有时候无效"
         aePrecapture = true
+        aePrecaptureAt = android.os.SystemClock.uptimeMillis()
         reapply(immediate = true)
     }
 
@@ -582,7 +588,10 @@ class CameraEngine(private val context: Context) {
         // 之前是「单次 capture 触发 + 立刻恢复重复请求」，那条重复请求经常把触发冲掉，
         // 表现就是点十次对三次。
         afTrigger = CaptureRequest.CONTROL_AF_TRIGGER_START
-        if (meteringMode == 0) aePrecapture = true   // 点测：换测光点后重新测
+        if (meteringMode == 0) {
+            aePrecapture = true                       // 点测：换测光点后重新测
+            aePrecaptureAt = android.os.SystemClock.uptimeMillis()
+        }
         reapply(immediate = true)
     }
 
@@ -607,6 +616,8 @@ class CameraEngine(private val context: Context) {
         when (mode) {
             Mode.AUTO -> {
                 builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
+                // 保险：确保 AE 没有被锁在旧结果上（某些 HAL 会保持上次收敛值）
+                builder.set(CaptureRequest.CONTROL_AE_LOCK, false)
                 builder.set(
                     CaptureRequest.CONTROL_AE_PRECAPTURE_TRIGGER,
                     if (aePrecapture) CaptureRequest.CONTROL_AE_PRECAPTURE_TRIGGER_START
@@ -697,7 +708,10 @@ class CameraEngine(private val context: Context) {
         }
         // 从手动档切回自动：发一次 AE 预拍，让它快速收敛（否则会从手动曝光的
         // 那个点慢慢爬，体感要等好几秒）
-        if (m == Mode.AUTO) aePrecapture = true
+        if (m == Mode.AUTO) {
+            aePrecapture = true
+            aePrecaptureAt = android.os.SystemClock.uptimeMillis()
+        }
         reapply(immediate = true)
     }
 
