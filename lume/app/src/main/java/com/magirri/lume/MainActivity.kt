@@ -145,10 +145,7 @@ class MainActivity : Activity() {
         // 注意：不能在 setContentView 之前碰 window.insetsController —— 那时 decorView 还是 null，会 NPE。
         window.addFlags(android.view.WindowManager.LayoutParams.FLAG_FULLSCREEN)
         @Suppress("DEPRECATION")
-        window.decorView.systemUiVisibility =
-            android.view.View.SYSTEM_UI_FLAG_FULLSCREEN or
-            android.view.View.SYSTEM_UI_FLAG_LAYOUT_STABLE or
-            android.view.View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+        window.decorView.systemUiVisibility = immersiveFlags()
         lut = Lut3D.parse(assets.open("luts/arri_cam_standard.cube").bufferedReader().use { it.readText() })
         camera = CameraEngine(this)
         recorder = VideoRecorder(this)
@@ -714,20 +711,43 @@ class MainActivity : Activity() {
         mfBtn.background = pill(if (openWheelKind == MF) 0x59FFFFFF else 0x2EFFFFFF)
     }
 
-    /** setContentView 之后才能真正操作 insets */
+    /**
+     * 像游戏那样全屏：状态栏和底部小白条（导航栏）都藏起来，
+     * 从边缘上滑可以临时唤出。每次拿到焦点都重新收一遍——有些机型通知/切前后台后会把它们放回来。
+     */
+    @Suppress("DEPRECATION")
+    private fun immersiveFlags(): Int =
+        android.view.View.SYSTEM_UI_FLAG_FULLSCREEN or
+        android.view.View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
+        android.view.View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or
+        android.view.View.SYSTEM_UI_FLAG_LAYOUT_STABLE or
+        android.view.View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or
+        android.view.View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+
     private fun hideSystemBars() {
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
             try {
                 // 不要 setDecorFitsSystemWindows(false)：那样内容会伸到导航栏底下，
                 // 横屏时右侧按钮会被裁掉
                 window.insetsController?.let {
-                    it.hide(android.view.WindowInsets.Type.statusBars())
+                    it.hide(
+                        android.view.WindowInsets.Type.statusBars() or
+                        android.view.WindowInsets.Type.navigationBars()
+                    )
                     it.systemBarsBehavior =
                         android.view.WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
                 }
             } catch (_: Exception) {
             }
+        } else {
+            @Suppress("DEPRECATION")
+            window.decorView.systemUiVisibility = immersiveFlags()
         }
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) hideSystemBars()
     }
 
     /** 自绘状态条：时间 + 电量，20 秒刷一次 */

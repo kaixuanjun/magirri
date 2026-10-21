@@ -317,3 +317,15 @@ MF 档时，**变焦按钮上方**多出「对焦」按钮，点开是同款细�
 
 - 模式 / 测光 / 对焦 / 设置四个按钮统一 `66×36dp` 胶囊，间距 6dp，设置按钮排在对焦下面。
 - 顶栏左右各留 44dp 安全区，时间与电量不会被屏幕 R 角吃掉。
+
+## 全屏（像游戏那样）
+
+状态栏和底部导航条（小白条）都隐藏，从边缘上滑可临时唤出：
+
+- API 30+：`WindowInsetsController.hide(statusBars() or navigationBars())` +
+  `BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE`
+- 低版本：`SYSTEM_UI_FLAG_HIDE_NAVIGATION | IMMERSIVE_STICKY | LAYOUT_HIDE_NAVIGATION`
+- `onWindowFocusChanged` 里重新收一遍——切前后台、下拉通知之后系统会把它们放回来。
+
+注意**不要**用 `setDecorFitsSystemWindows(false)`：那只是让内容画到导航栏底下（会被挡住），
+而不是把导航栏藏掉。第一次进入全屏系统会弹一次 "Viewing full screen" 提示，这是系统行为。
