@@ -4,7 +4,10 @@ import android.Manifest
 import android.app.Activity
 import android.content.pm.PackageManager
 import android.graphics.Color
+import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.InsetDrawable
+import android.graphics.drawable.LayerDrawable
 import android.media.Image
 import android.os.Build
 import android.os.Bundle
@@ -826,11 +829,32 @@ class MainActivity : Activity() {
     }
 
     /** 录像按钮外观：空闲是红圆点，录制中是红方块 */
-    private fun recordIcon(recording: Boolean): GradientDrawable = GradientDrawable().apply {
-        shape = if (recording) GradientDrawable.RECTANGLE else GradientDrawable.OVAL
-        cornerRadius = if (recording) dp(8).toFloat() else 0f
-        setColor(0xFFE5484D.toInt())
-        setStroke(dp(3), 0xCCFFFFFF.toInt())
+    /**
+     * 录像键：外圈永远是圆形，录制中在正中间加一块白色圆角矩形做区分。
+     * （原先是整颗键变成方块，形状跳一下很丑。）
+     */
+    private fun recordIcon(recording: Boolean): Drawable {
+        val ring = GradientDrawable().apply {
+            shape = GradientDrawable.OVAL
+            setColor(0xFFE5484D.toInt())
+            setStroke(dp(3), 0xCCFFFFFF.toInt())
+        }
+        if (!recording) return ring
+
+        val mark = GradientDrawable().apply {
+            shape = GradientDrawable.RECTANGLE
+            cornerRadius = dp(5).toFloat()
+            setColor(Color.WHITE)
+        }
+        val whole = BUTTON_SIZE
+        val w = dp(22)
+        val h = dp(16)
+        val inner = InsetDrawable(
+            mark,
+            (whole - w) / 2, (whole - h) / 2,
+            (whole - w) / 2, (whole - h) / 2,
+        )
+        return LayerDrawable(arrayOf(ring, inner))
     }
 
     private fun toggleRecording() {
