@@ -61,6 +61,8 @@ class MainActivity : Activity() {
     private lateinit var focusRing: View
     private var resIndex = 0            // 0=4K 1=1080P 2=720P
     private var fpsIndex = 1            // 0=24 1=30 2=60
+    private lateinit var clockText: TextView
+    private lateinit var batteryText: TextView
 
     /** 当前画幅索引：0=3:2, 1=16:9, 2=2.35:1 */
 
@@ -139,6 +141,14 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // 隐藏系统通知栏（用自绘的那一条替代）。
+        // 注意：不能在 setContentView 之前碰 window.insetsController —— 那时 decorView 还是 null，会 NPE。
+        window.addFlags(android.view.WindowManager.LayoutParams.FLAG_FULLSCREEN)
+        @Suppress("DEPRECATION")
+        window.decorView.systemUiVisibility =
+            android.view.View.SYSTEM_UI_FLAG_FULLSCREEN or
+            android.view.View.SYSTEM_UI_FLAG_LAYOUT_STABLE or
+            android.view.View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
         lut = Lut3D.parse(assets.open("luts/arri_cam_standard.cube").bufferedReader().use { it.readText() })
         camera = CameraEngine(this)
         recorder = VideoRecorder(this)
@@ -238,9 +248,35 @@ class MainActivity : Activity() {
     }
 
     private fun buildUi() {
+        // 系统通知栏已隐藏，这里自绘一条很窄的：左时间、右电量
         val root = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
+            orientation = LinearLayout.VERTICAL
             setBackgroundColor(Color.BLACK)
+        }
+
+        val topBar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(14), 0, dp(14), 0)
+            setBackgroundColor(Color.BLACK)
+        }
+        clockText = TextView(this).apply {
+            setTextColor(0xCCFFFFFF.toInt())
+            textSize = 11f
+            isSingleLine = true
+        }
+        batteryText = TextView(this).apply {
+            setTextColor(0xCCFFFFFF.toInt())
+            textSize = 11f
+            isSingleLine = true
+        }
+        topBar.addView(clockText)
+        topBar.addView(View(this), LinearLayout.LayoutParams(0, 1, 1f))
+        topBar.addView(batteryText)
+        root.addView(topBar, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(22)))
+
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
         }
 
         // ---------- 左：取景 ----------
@@ -272,31 +308,25 @@ class MainActivity : Activity() {
             FrameLayout.LayoutParams(dp(320), dp(320), Gravity.CENTER)
         )
 
+        // 齿轮放在整屏右下角（面板右下那块留白里），见 setContentView 前
         settingsBtn = TextView(this).apply {
-            text = "设置"
+            text = "⚙"
             setTextColor(Color.WHITE)
-            textSize = 12f
+            textSize = 20f
             gravity = Gravity.CENTER
-            setPadding(dp(14), dp(8), dp(14), dp(8))
-            background = pill(0x4D000000)
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(0x4D000000)
+                setStroke(dp(1), 0x33FFFFFF)
+            }
             setOnClickListener { openSettings() }
         }
-        previewBox.addView(
-            settingsBtn,
-            FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply {
-                gravity = Gravity.TOP or Gravity.START
-                topMargin = dp(12)
-                leftMargin = dp(12)
-            }
-        )
 
         status = TextView(this).apply {
             text = "ARRI 直出 · 就绪"
             setTextColor(0xCCFFFFFF.toInt())
             textSize = 12f
-            setPadding(dp(4), dp(8), dp(14), dp(8))
+            setPadding(dp(14), dp(8), dp(14), dp(8))
         }
         previewBox.addView(
             status,
@@ -305,7 +335,7 @@ class MainActivity : Activity() {
             ).apply {
                 gravity = Gravity.TOP or Gravity.START
                 topMargin = dp(12)
-                leftMargin = dp(84)
+                leftMargin = dp(12)
             }
         )
 
@@ -353,7 +383,7 @@ class MainActivity : Activity() {
             }
         )
 
-        root.addView(
+        row.addView(
             previewBox,
             LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 2.2f)
         )
@@ -493,9 +523,7 @@ class MainActivity : Activity() {
         }
         camCol.addView(
             modeBtn,
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
-            )
+            LinearLayout.LayoutParams(dp(66), dp(36))
         )
 
         // 测光模式：对应 ARRI 曝光表的测光区域（点测 / 中央重点 / 多区）
@@ -514,9 +542,7 @@ class MainActivity : Activity() {
         }
         camCol.addView(
             meterBtn,
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply { topMargin = dp(10) }
+            LinearLayout.LayoutParams(dp(66), dp(36)).apply { topMargin = dp(10) }
         )
 
         // 对焦模式：AF-S / AF-C / MF
@@ -534,9 +560,7 @@ class MainActivity : Activity() {
         }
         camCol.addView(
             focusBtn,
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply { topMargin = dp(10) }
+            LinearLayout.LayoutParams(dp(66), dp(36)).apply { topMargin = dp(10) }
         )
 
         // 画幅：3:2 / 16:9 / 2.35:1，循环切换
@@ -604,10 +628,28 @@ class MainActivity : Activity() {
             LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f)
         )
 
-        root.addView(panel, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
+        row.addView(panel, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
+
+        root.addView(row, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f
+        ))
 
         applyMode(CameraEngine.Mode.AUTO, force = true)
-        setContentView(root)
+
+        val container = FrameLayout(this)
+        container.addView(root, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT
+        ))
+        container.addView(
+            settingsBtn,
+            FrameLayout.LayoutParams(dp(40), dp(40), Gravity.BOTTOM or Gravity.END).apply {
+                rightMargin = dp(16)
+                bottomMargin = dp(14)
+            }
+        )
+        setContentView(container)
+        hideSystemBars()
+        startStatusTicker()
         waitForFirstFrame()
     }
 
@@ -619,7 +661,7 @@ class MainActivity : Activity() {
             textSize = 12f
             gravity = Gravity.CENTER
             isSingleLine = true          // 「对焦 21cm」这类长文案不折行
-            setPadding(dp(14), dp(7), dp(14), dp(7))
+            setPadding(dp(10), dp(7), dp(10), dp(7))
             // 按钮自带灰色圆角胶囊；面板底是纯黑，两者区分开
             background = pill(0x2EFFFFFF)
             setOnClickListener { if (isEnabled) toggleWheel(kind) }
@@ -676,6 +718,49 @@ class MainActivity : Activity() {
         mfBtn.background = pill(if (openWheelKind == MF) 0x59FFFFFF else 0x2EFFFFFF)
     }
 
+    /** setContentView 之后才能真正操作 insets */
+    private fun hideSystemBars() {
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+            try {
+                // 不要 setDecorFitsSystemWindows(false)：那样内容会伸到导航栏底下，
+                // 横屏时右侧按钮会被裁掉
+                window.insetsController?.let {
+                    it.hide(android.view.WindowInsets.Type.statusBars())
+                    it.systemBarsBehavior =
+                        android.view.WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                }
+            } catch (_: Exception) {
+            }
+        }
+    }
+
+    /** 自绘状态条：时间 + 电量，20 秒刷一次 */
+    private fun startStatusTicker() {
+        val tick = object : Runnable {
+            override fun run() {
+                clockText.text = java.text.SimpleDateFormat(
+                    "HH:mm", java.util.Locale.getDefault()
+                ).format(java.util.Date())
+                batteryText.text = batteryLabel()
+                ui.postDelayed(this, 20_000)
+            }
+        }
+        ui.postDelayed(tick, 0)
+    }
+
+    private fun batteryLabel(): String {
+        val i = registerReceiver(
+            null, android.content.IntentFilter(android.content.Intent.ACTION_BATTERY_CHANGED)
+        ) ?: return ""
+        val level = i.getIntExtra(android.os.BatteryManager.EXTRA_LEVEL, -1)
+        val scale = i.getIntExtra(android.os.BatteryManager.EXTRA_SCALE, -1)
+        if (level < 0 || scale <= 0) return ""
+        val pct = level * 100 / scale
+        val charging = i.getIntExtra(android.os.BatteryManager.EXTRA_STATUS, -1) ==
+                android.os.BatteryManager.BATTERY_STATUS_CHARGING
+        return if (charging) "$pct% ⚡" else "$pct%"
+    }
+
     /** 等取景器真正出第一帧，再把启动 logo 淡出 */
     private fun waitForFirstFrame() {
         val start = System.currentTimeMillis()
@@ -722,12 +807,10 @@ class MainActivity : Activity() {
     private fun openSettings() {
         if (::settingsPanel.isInitialized && settingsPanel.visibility == View.VISIBLE) {
             settingsPanel.visibility = View.GONE
-            settingsBtn.text = "设置"
             return
         }
         if (!::settingsPanel.isInitialized) buildSettingsPanel()
         settingsPanel.visibility = View.VISIBLE
-        settingsBtn.text = "关闭"
         refreshSettings()
     }
 
@@ -1379,7 +1462,7 @@ class MainActivity : Activity() {
 
         /** ARRI 曝光表的测光区域：Spot / Center / Multi */
 
-        private val METER_NAMES = listOf("点测", "中央重点", "多区")
+        private val METER_NAMES = listOf("点测", "中央", "多区")
 
 
 
