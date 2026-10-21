@@ -120,6 +120,7 @@ class CameraEngine(private val context: Context) {
      * AE_STATE 到 CONVERGED 后复位。
      */
     @Volatile private var aePrecapture = false
+    private var aePrecaptureAt = 0L
 
     /** AF 触发位：点一下置 START，对焦完成后复位 IDLE */
     @Volatile private var afTrigger = CaptureRequest.CONTROL_AF_TRIGGER_IDLE
@@ -205,6 +206,7 @@ class CameraEngine(private val context: Context) {
                     aeState == CaptureResult.CONTROL_AE_STATE_LOCKED
                 ) {
                     aePrecapture = false
+                    aePrecaptureAt = 0L
                     reapply()
                 }
             }
@@ -479,6 +481,9 @@ class CameraEngine(private val context: Context) {
             else -> "多区"
         }
         Log.i(TAG, "测光模式 -> $name")
+        // 只改 AE 区域 HAL 未必会重新收敛，要踢一次 PRECAPTURE 让它重新测光，
+        // 否则表现就是"有时候有效有时候无效"
+        aePrecapture = true
         reapply(immediate = true)
     }
 
@@ -577,6 +582,7 @@ class CameraEngine(private val context: Context) {
         // 之前是「单次 capture 触发 + 立刻恢复重复请求」，那条重复请求经常把触发冲掉，
         // 表现就是点十次对三次。
         afTrigger = CaptureRequest.CONTROL_AF_TRIGGER_START
+        if (meteringMode == 0) aePrecapture = true   // 点测：换测光点后重新测
         reapply(immediate = true)
     }
 
@@ -606,6 +612,16 @@ class CameraEngine(private val context: Context) {
                     if (aePrecapture) CaptureRequest.CONTROL_AE_PRECAPTURE_TRIGGER_START
                     else CaptureRequest.CONTROL_AE_PRECAPTURE_TRIGGER_IDLE
                 )
+                // 预拍位挂太久有的 HAL 会一直卡在 PRECAPTURE，加个超时兜底
+                if (aePrecapture) {
+                    val now = android.os.SystemClock.uptimeMillis()
+                    if (aePrecaptureAt == 0L) aePrecaptureAt = now
+                    else if (now - aePrecaptureAt > 900L) {
+                        aePrecapture = false
+                        aePrecaptureAt = 0L
+                        Log.i(TAG, "AE 预拍超时，复位")
+                    }
+                }
                 if (controls.hasEv) {
                     builder.set(
                         CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION,

@@ -62,6 +62,7 @@ class MainActivity : Activity() {
     private var levelOn = false
     private var gridOn = false
     private var assistRows: Map<String, TextView> = emptyMap()
+    private var menuAnimGen = 0
     private var lensIndexNow = 0
     private lateinit var settingsPanel: View
     private lateinit var ratioValue: TextView
@@ -374,7 +375,10 @@ class MainActivity : Activity() {
                     if (uv != null && camera.focusMode != CameraEngine.Focus.MF) {
                         camera.focusAt(uv.first, uv.second)
             // 点测光跟着手指：测光圈画在点击处
-            if (meterMode == 0) this@MainActivity.overlay.setMeterSpot(true, e.x, e.y)
+            if (meterMode == 0) {
+                this@MainActivity.overlay.setMeterSpot(true, e.x, e.y)
+                preview.setMeterPoint(uv.first, uv.second)   // 软件测光也跟到这个点
+            }
                         showFocusRing(e.x, e.y)
                         v.performClick()
                     } else if (uv == null) {
@@ -725,6 +729,10 @@ class MainActivity : Activity() {
         ui.postDelayed({ hideSystemBars() }, 1200)
         startStatusTicker()
         startOverlayTicker()
+        // 菜单在启动时就建好并隐藏：首次打开和后面每次走完全一样的代码路径，
+        // 不会再出现"第一次没有动画"这种只在首次生效的怪问题
+        buildSettingsPanel()
+        settingsPanel.visibility = View.GONE
         waitForFirstFrame()
     }
 
@@ -1013,34 +1021,60 @@ class MainActivity : Activity() {
      * 现在打开只管打开，关闭只走右上角返回 / 系统返回键。
      */
 
+    /**
+     * 打开菜单。幂等；动画用主线程 ValueAnimator 驱动（不依赖 View 是否已 attach /
+     * 是否走过布局），并用一个自增序号做"动画代次"，连点也不会把后来的动画打断。
+     */
     private fun openSettings() {
         if (!::settingsPanel.isInitialized) buildSettingsPanel()
         if (settingsPanel.visibility == View.VISIBLE && settingsPanel.alpha > 0.6f) return
 
         refreshSettings()
-        settingsPanel.animate().cancel()
         settingsPanel.visibility = View.VISIBLE
-        settingsPanel.alpha = 0f
-        settingsPanel.translationY = dp(14).toFloat()
-        // 首次打开时面板刚 addView 进 decor，还没走过布局；直接在同一个消息里
-        // 启动动画会跟首次绘制挤在一起，看起来就是"没有动画"。放到下一帧再跑。
-        settingsPanel.post {
-            settingsPanel.animate().alpha(1f).translationY(0f).setDuration(240).start()
-        }
+        val gen = ++menuAnimGen
+        fadeMenu(gen, 0f, 1f)
     }
 
     /** 关闭菜单 */
     private fun closeSettings() {
         if (!::settingsPanel.isInitialized) return
         if (settingsPanel.visibility != View.VISIBLE) return
-        settingsPanel.animate().cancel()
-        settingsPanel.animate().alpha(0f).translationY(dp(-10).toFloat())
-            .setDuration(180)
-            .withEndAction {
-                settingsPanel.visibility = View.GONE
-                settingsPanel.alpha = 1f
-                settingsPanel.translationY = 0f
-            }.start()
+        val gen = ++menuAnimGen
+        fadeMenu(gen, settingsPanel.alpha, 0f) {
+            if (gen == menuAnimGen) settingsPanel.visibility = View.GONE
+        }
+    }
+
+    /**
+     * 菜单淡入淡出。用 ValueAnimator 而不是 ViewPropertyAnimator：
+     * 后者在视图尚未 attach / 尚未布局时会丢掉动画（首次打开就没动画），
+     * ValueAnimator 走 Choreographer，第一帧就开始插值。
+     */
+    private fun fadeMenu(gen: Int, from: Float, to: Float, end: (() -> Unit)? = null) {
+        val startY = dp(14).toFloat() * (1f - from)
+        val endY = dp(14).toFloat() * (1f - to)
+        val va = android.animation.ValueAnimator.ofFloat(from, to)
+        va.duration = if (to > from) 260L else 180L
+        va.interpolator = if (to > from) {
+            android.view.animation.DecelerateInterpolator()
+        } else {
+            android.view.animation.AccelerateInterpolator()
+        }
+        va.addUpdateListener { a ->
+            if (gen != menuAnimGen) return@addUpdateListener
+            val t = a.animatedValue as Float
+            settingsPanel.alpha = t
+            settingsPanel.translationY = startY + (endY - startY) * (if (to > from) (t - from) / (to - from) else (from - t) / (from - to))
+        }
+        va.addListener(object : android.animation.AnimatorListenerAdapter() {
+            override fun onAnimationEnd(animation: android.animation.Animator) {
+                if (gen != menuAnimGen) return
+                settingsPanel.alpha = to
+                settingsPanel.translationY = endY
+                end?.invoke()
+            }
+        })
+        va.start()
     }
 
     /** 一级菜单切换：右侧内容淡入 */

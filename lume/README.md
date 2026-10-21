@@ -505,3 +505,22 @@ Camera2 没有"测光模式"开关，测光范围只有 `CONTROL_AE_REGIONS`：�
 在 `TextView(this).apply { ... }` 里裸写 `overlay.xxx`，`overlay` 会解析成
 **`View.getOverlay()`（`ViewOverlay`）**，而不是 Activity 的字段，报
 `Unresolved reference`。必须写 `this@MainActivity.overlay`。
+
+### 首次打开动画 / 测光"时灵时不灵" 的最终修法
+
+**动画**：之前用 `ViewPropertyAnimator`（`view.animate()`）。面板第一次 `addView` 进 decor
+时还没 attach、没走过布局，动画会被丢掉——这就是"只有第一次没动画"。
+
+现在做了两件事：
+1. 菜单在 `onCreate` 里**预先建好**并设成 `GONE`，首次打开和后面每次完全同一条路径；
+2. 用主线程 `ValueAnimator` 驱动 alpha/translationY（走 Choreographer，第一帧就开始插值），
+   再用一个自增 `menuAnimGen` 做代次，连点不会互相打断。
+
+验证：首次打开时抓到的中间帧能看到菜单是半透明的、能透出取景器画面，值（3:2 / 4K / 30）也在。
+
+**测光**：改 `CONTROL_AE_REGIONS` 之后 HAL 未必会重新收敛，所以现在
+- 切测光模式 → 踢一次 `CONTROL_AE_PRECAPTURE_TRIGGER_START`
+- 点测下点画面换测光点 → 同样踢一次
+- 预拍位带 900ms 超时兜底，避免某些 HAL 卡在 PRECAPTURE 不动
+
+S 档的软件测光也跟到了手指位置（`preview.setMeterPoint`），不再固定采样中心。

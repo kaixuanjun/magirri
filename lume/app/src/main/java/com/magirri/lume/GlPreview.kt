@@ -531,7 +531,15 @@ class GlPreview(
     @Volatile var histogram: FloatArray = FloatArray(16)
         private set
     @Volatile var lastLuma = -1f
-        private set
+
+    /** 点测光时软件采样的位置（纹理坐标 0..1），默认中心 */
+    @Volatile private var meterU = 0.5f
+    @Volatile private var meterV = 0.5f
+
+    fun setMeterPoint(u: Float, v: Float) {
+        meterU = u.coerceIn(0f, 1f)
+        meterV = v.coerceIn(0f, 1f)
+    }
 
     /** 已经真正画出过多少帧：MainActivity 靠它决定什么时候撤掉启动 logo */
     @Volatile var framesDrawn = 0L
@@ -606,10 +614,11 @@ class GlPreview(
             return (r * 0.299f + g * 0.587f + b * 0.114f) / 255f
         }
 
-        val cx = MW / 2f
-        val cy = MH / 2f
+        // 点测模式：采样点跟着手指（meterU/meterV 是纹理坐标，注意读回的图像是上下翻转的）
+        val cx = if (meterMode == 0) (meterU * MW).coerceIn(2f, MW - 3f) else MW / 2f
+        val cy = if (meterMode == 0) ((1f - meterV) * MH).coerceIn(2f, MH - 3f) else MH / 2f
         return when (meterMode) {
-            // 点测：只取中间一小块（约画幅宽度的 6%），就是点测的含义
+            // 点测：只取一小块（约画幅的 6%），就是点测的含义
             0 -> {
                 var sum = 0f
                 var n = 0
