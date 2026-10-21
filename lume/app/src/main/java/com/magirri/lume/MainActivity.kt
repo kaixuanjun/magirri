@@ -56,6 +56,9 @@ class MainActivity : Activity() {
     /** 0 点测 / 1 中央重点 / 2 多区 */
     private var meterMode = 1
 
+    /** 当前变焦倍率（GL 数字变焦，相机始终全画幅） */
+    private var zoomLevel = 1f
+
     /** S 档上一次的 EV，用来算增量补偿 */
     private var lastEv = 0f
 
@@ -310,7 +313,10 @@ class MainActivity : Activity() {
         zoomDial = WheelView(this, "变焦").apply {
             format = { v -> String.format("%.1f×", zoomFromValue(v)) }
             onChange = { v ->
-                camera.setZoom(zoomFromValue(v))
+                // 只推给 GL，不同步相机：省掉每 60ms 一次的重复请求
+                zoomLevel = zoomFromValue(v)
+                preview.targetZoom = zoomLevel
+                preview.requestRender()
                 updateWheelButtons()
             }
         }
@@ -551,7 +557,7 @@ class MainActivity : Activity() {
 
     /** 刷新四个入口按钮上的数值，并标出当前展开的那个 */
     private fun updateWheelButtons() {
-        zoomBtn.text = String.format("变焦 %.1f×", camera.zoom)
+        zoomBtn.text = String.format("变焦 %.1f×", zoomLevel)
         evBtn.text = if (camera.mode == CameraEngine.Mode.M) {
             String.format("曝光 %+.1f", evDial.value * 4f - 2f)
         } else {
@@ -990,9 +996,11 @@ class MainActivity : Activity() {
                 image.close()
                 val (rotated0, rw0, rh0) = PhotoProcessor.rotate(argb, w, h, photoRotation())
                 // 按当前画幅居中裁切，和取景器看到的构图一致
-                val (rotated, rw, rh) = PhotoProcessor.cropToAspect(
+                val (crop0, cw0, ch0) = PhotoProcessor.cropToAspect(
                     rotated0, rw0, rh0, RATIOS[ratioIndex]
                 )
+                // 再按当前变焦倍率裁一刀（预览是 GL 数字变焦，照片要跟着裁才对得上）
+                val (rotated, rw, rh) = PhotoProcessor.cropZoom(crop0, cw0, ch0, zoomLevel)
                 val uri = PhotoProcessor.saveJpeg(this, rotated, rw, rh)
                 val ms = System.currentTimeMillis() - t0
                 ui.post {

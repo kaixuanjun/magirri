@@ -47,6 +47,14 @@ class GlPreview(
 
     var rightAlign = true
 
+    /**
+     * 变焦全部在 GL 里做：只改采样 UV 的范围，不碰相机。
+     * 之前每次拨动都 setRepeatingRequest 改裁剪区域，管线不停重新收敛，
+     * 画面就是一顿一顿的。targetZoom 由 UI 设，zoomNow 每帧向它靠近。
+     */
+    @Volatile var targetZoom = 1f
+    private var zoomNow = 1f
+
 
 
     /** 设置画幅裁切：cropY = 目标画幅 / 传感器画幅（1 = 不裁） */
@@ -419,6 +427,11 @@ class GlPreview(
 
     override fun onDrawFrame(gl: GL10?) {
         val st = cameraTexture ?: return
+        // 变焦插值：每帧向目标靠 28%，拨动再快也是滑过去的
+        if (zoomNow != targetZoom) {
+            val diff = targetZoom - zoomNow
+            zoomNow = if (Math.abs(diff) < 0.002f) targetZoom else zoomNow + diff * 0.28f
+        }
         val tStart = System.nanoTime()
         st.updateTexImage()
         st.getTransformMatrix(texMatrix)
@@ -608,7 +621,7 @@ class GlPreview(
         // 旋转 UV 等于画面反向旋转，所以传负角度，画面才是顺时针转
         GLES20.glUniform1f(uRotation, rotationRad)
         GLES20.glUniform1f(uStrength, strength)
-        GLES20.glUniform2f(uTexScale, cropX, cropY)
+        GLES20.glUniform2f(uTexScale, cropX / zoomNow, cropY / zoomNow)
         GLES20.glUniform2f(uQuadScale, qx, qy)
 
         quad.position(0)

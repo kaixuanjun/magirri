@@ -107,6 +107,20 @@ object PhotoProcessor {
         }
     }
 
+    /** 数字变焦：按倍率居中裁切，保证照片构图和取景器一致 */
+    fun cropZoom(argb: IntArray, w: Int, h: Int, zoom: Float): Triple<IntArray, Int, Int> {
+        if (zoom <= 1.01f) return Triple(argb, w, h)
+        val nw = (w / zoom).toInt().coerceIn(16, w)
+        val nh = (h / zoom).toInt().coerceIn(16, h)
+        val ox = (w - nw) / 2
+        val oy = (h - nh) / 2
+        val out = IntArray(nw * nh)
+        for (y in 0 until nh) {
+            System.arraycopy(argb, (y + oy) * w + ox, out, y * nw, nw)
+        }
+        return Triple(out, nw, nh)
+    }
+
     /** 按目标画幅居中裁切（不缩放） */
     fun cropToAspect(
         argb: IntArray, w: Int, h: Int, target: Float,
