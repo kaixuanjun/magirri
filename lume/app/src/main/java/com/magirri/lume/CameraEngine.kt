@@ -178,6 +178,14 @@ class CameraEngine(private val context: Context) {
     fun open(texture: SurfaceTexture, recordTexture: SurfaceTexture? = null): Config? {
         if (device != null) return null   // 已经在跑了，别重复打开
         val manager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+        // 记一下后摄数量，方便判断这台机器能不能靠 CONTROL_ZOOM_RATIO 换镜头
+        run {
+            val backIds = manager.cameraIdList.filter { cid ->
+                manager.getCameraCharacteristics(cid)
+                    .get(CameraCharacteristics.LENS_FACING) == CameraMetadata.LENS_FACING_BACK
+            }
+            Log.i(TAG, "后摄 ${backIds.size} 个：${backIds.joinToString()}")
+        }
         val id = manager.cameraIdList.firstOrNull { cid ->
             manager.getCameraCharacteristics(cid)
                 .get(CameraCharacteristics.LENS_FACING) == CameraMetadata.LENS_FACING_BACK

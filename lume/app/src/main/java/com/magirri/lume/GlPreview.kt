@@ -70,6 +70,13 @@ class GlPreview(
     @Volatile var targetZoom = 1f
     private var zoomNow = 1f
 
+    /**
+     * 相机端已经做掉的变焦倍数（含换镜头）。
+     * 真正的总变焦 = 相机变焦 × GL 变焦，所以这里要把相机那部分除掉，
+     * 否则相机的 zoom 一变，画面就跟着跳。
+     */
+    @Volatile var cameraZoom = 1f
+
 
 
     /** 设置画幅裁切：cropY = 目标画幅 / 传感器画幅（1 = 不裁） */
@@ -636,7 +643,9 @@ class GlPreview(
         // 旋转 UV 等于画面反向旋转，所以传负角度，画面才是顺时针转
         GLES20.glUniform1f(uRotation, rotationRad)
         GLES20.glUniform1f(uStrength, strength)
-        GLES20.glUniform2f(uTexScale, cropX / zoomNow, cropY / zoomNow)
+        // 总变焦 = 相机 zoom × GL zoom；相机（可能换镜头）先吃掉一部分
+        val glZoom = (zoomNow / cameraZoom.coerceAtLeast(1f)).coerceAtLeast(1f)
+        GLES20.glUniform2f(uTexScale, cropX / glZoom, cropY / glZoom)
         GLES20.glUniform2f(uQuadScale, qx, qy)
 
         quad.position(0)

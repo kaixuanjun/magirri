@@ -393,11 +393,14 @@ class MainActivity : Activity() {
         zoomDial = WheelView(this, "变焦").apply {
             format = { v -> String.format("%.1f×", zoomFromValue(v)) }
             onChange = { v ->
-                // 只推给 GL，不同步相机：省掉每 60ms 一次的重复请求
+                // GL 立刻跟手，相机延后 260ms 再追 —— 相机那一步会让 HAL 去换镜头，
+                // 每帧都发会把管线打满（之前变焦卡顿就是这么来的）
                 zoomLevel = zoomFromValue(v)
                 preview.targetZoom = zoomLevel
                 preview.requestRender()
                 updateWheelButtons()
+                cameraZoomTick.removeCallbacks(cameraZoomTask)
+                cameraZoomTick.postDelayed(cameraZoomTask, 260)
             }
         }
         evDial = WheelView(this, "EV").apply {
@@ -1016,6 +1019,14 @@ class MainActivity : Activity() {
         }, 900)
     }
 
+    private val cameraZoomTick = android.os.Handler(android.os.Looper.getMainLooper())
+    private val cameraZoomTask = Runnable {
+        // 交给相机：多摄机型上这一步会切到长焦/超广角，切不切由 HAL 决定
+        camera.setZoom(zoomLevel)
+        preview.cameraZoom = camera.zoom
+        preview.requestRender()
+    }
+
     /** 切对焦模式：相机侧改 AF 模式，UI 侧决定要不要露出「对焦」按钮 */
     private fun applyFocusMode() {
         // 不支持的机器跳过 MF
@@ -1263,8 +1274,16 @@ class MainActivity : Activity() {
      *
      * 这样即使系统关了自动旋转、窗口一直是竖的，横着拍出来的照片也是横的。
      */
-    private fun photoRotation(): Int =
-        ((sensorOrientation - deviceDeg) % 360 + 360) % 360
+    /**
+     * 出片方向：**只支持横屏**。
+     * 竖持时加速度计会给出 0/180，算出来是 90/270——那会得到一张竖着的图，
+     * 后面按横屏算的变焦/画幅裁切全对不上，画面就被拉变形。
+     * 所以这里只允许 0 / 180，竖持统一按 0 出片。
+     */
+    private fun photoRotation(): Int {
+        val raw = ((sensorOrientation - deviceDeg) % 360 + 360) % 360
+        return if (raw == 180) 180 else 0
+    }
 
     private fun applyRotation() {
         preview.rotationDeg = previewRotation()
