@@ -193,6 +193,13 @@ class MainActivity : Activity() {
         return Math.round(c.evMin + v * (c.evMax - c.evMin)).toInt().coerceIn(c.evMin, c.evMax)
     }
 
+    /** 曝光补偿 index → 滑块位置 0..1（切档恢复用） */
+    private fun evValueFromIndex(idx: Int): Float {
+        val c = camera.controls
+        if (!c.hasEv || c.evMax <= c.evMin) return 0.5f
+        return ((idx - c.evMin).toFloat() / (c.evMax - c.evMin)).coerceIn(0f, 1f)
+    }
+
     private fun evFromValue(v: Float): Float {
         val c = camera.controls
         return evIndexFromValue(v) * (if (c.evStep > 0f) c.evStep else 0f)
@@ -921,14 +928,17 @@ class MainActivity : Activity() {
         fpsValue.text = FPS_NAMES[fpsIndex]
     }
 
-    /** 设置页：全屏，左侧一级菜单 / 右侧二级菜单，模仿相机菜单 */
+    /**
+     * 相机式菜单：全屏、无圆角、无灰底、紧凑排版。
+     * 左侧一级用一条白色竖条指示当前项，右侧二级是「标签 …‹ 值 ›」。
+     */
     private fun buildSettingsPanel() {
         val overlay = FrameLayout(this).apply {
             setBackgroundColor(0xFF000000.toInt())
         }
         val page = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(28), dp(18), dp(28), dp(18))
+            setPadding(dp(30), dp(16), dp(30), dp(16))
         }
 
         // ---- 标题行 ----
@@ -939,80 +949,93 @@ class MainActivity : Activity() {
         titleRow.addView(TextView(this).apply {
             text = "菜单"
             setTextColor(Color.WHITE)
-            textSize = 18f
+            textSize = 16f
+            letterSpacing = 0.06f
         }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         titleRow.addView(TextView(this).apply {
-            text = "点击空白 / 返回键 关闭"
-            setTextColor(0x66FFFFFF)
+            text = "返回键关闭"
+            setTextColor(0x59FFFFFF)
             textSize = 11f
         })
         page.addView(titleRow, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
-        ).apply { bottomMargin = dp(16) })
+        ).apply { bottomMargin = dp(10) })
 
-        // ---- 主体：左一级 / 右二级 ----
+        page.addView(divider(0x33FFFFFF), LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, dp(1)
+        ).apply { bottomMargin = dp(6) })
+
+        // ---- 主体 ----
         val body = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
         }
 
-        // 左：一级菜单
+        // 左：一级菜单，选中项用白色竖条指示（不用底色）
         val leftCol = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(0xFF0A0A0A.toInt())
-            setPadding(dp(4), dp(8), dp(4), dp(8))
+            setPadding(0, dp(4), dp(20), 0)
         }
-        val category = TextView(this).apply {
+        val catRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        catRow.addView(View(this).apply { setBackgroundColor(Color.WHITE) },
+            LinearLayout.LayoutParams(dp(3), dp(18)).apply { rightMargin = dp(10) })
+        catRow.addView(TextView(this).apply {
             text = "拍摄"
             setTextColor(Color.WHITE)
             textSize = 14f
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(18), dp(12), dp(18), dp(12))
-            background = GradientDrawable().apply {
-                setColor(0x33FFFFFF)
-                cornerRadius = dp(8).toFloat()
-            }
-        }
-        leftCol.addView(category, LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
-        ).apply { topMargin = dp(4) })
-        body.addView(leftCol, LinearLayout.LayoutParams(dp(150), ViewGroup.LayoutParams.MATCH_PARENT)
-            .apply { rightMargin = dp(18) })
+        })
+        leftCol.addView(catRow, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
+        ).apply { topMargin = dp(8) })
 
-        // 右：二级菜单（拍摄类别下的三项）
+        body.addView(leftCol, LinearLayout.LayoutParams(dp(150), ViewGroup.LayoutParams.MATCH_PARENT)
+            .apply { rightMargin = dp(10) })
+
+        // 右：二级菜单，标签 …‹ 值 ›
         val rightCol = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
         }
 
-        fun item(label: String, onTap: (TextView) -> Unit): TextView {
+        fun item(label: String, onTap: () -> Unit): TextView {
             val row = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
-                setPadding(dp(8), dp(14), dp(8), dp(14))
-                setBackgroundColor(0x00000000)
+                setPadding(0, dp(11), 0, dp(11))
                 isClickable = true
+                setOnClickListener { onTap() }
             }
             row.addView(TextView(this).apply {
                 text = label
-                setTextColor(0xDDDDDDDD.toInt())
-                textSize = 14f
+                setTextColor(0xCCCCCCCC.toInt())
+                textSize = 13f
             }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
 
             val value = TextView(this).apply {
                 setTextColor(Color.WHITE)
                 textSize = 13f
                 gravity = Gravity.CENTER
-                setPadding(dp(16), dp(7), dp(16), dp(7))
-                background = pill(0x2EFFFFFF)
             }
+            row.addView(TextView(this).apply {
+                text = "‹"
+                setTextColor(0x66FFFFFF)
+                textSize = 13f
+                setPadding(0, 0, dp(10), 0)
+            })
             row.addView(value)
-            row.setOnClickListener {
-                onTap(value)
-            }
+            row.addView(TextView(this).apply {
+                text = "›"
+                setTextColor(0x66FFFFFF)
+                textSize = 13f
+                setPadding(dp(10), 0, 0, 0)
+            })
             rightCol.addView(row, LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
             ))
-            rightCol.addView(View(this).apply { setBackgroundColor(0x1AFFFFFF) },
-                LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(1)))
+            rightCol.addView(divider(0x1FFFFFFF), LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(1)
+            ))
             return value
         }
 
@@ -1035,10 +1058,10 @@ class MainActivity : Activity() {
         }
 
         rightCol.addView(TextView(this).apply {
-            text = "分辨率 / 帧率改完会重启相机"
-            setTextColor(0x66FFFFFF)
-            textSize = 11f
-            setPadding(dp(8), dp(14), dp(8), 0)
+            text = "分辨率 / 帧率 改完会重启相机"
+            setTextColor(0x4DFFFFFF)
+            textSize = 10f
+            setPadding(0, dp(10), 0, 0)
         })
 
         body.addView(rightCol, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
@@ -1049,8 +1072,6 @@ class MainActivity : Activity() {
         overlay.addView(page, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT
         ))
-        // page 铺满全屏，点击事件到不了 overlay，所以关闭监听要挂在 page 上；
-        // 条目自己是 clickable 的，会把点击吃掉
         page.setOnClickListener { openSettings() }
         overlay.setOnClickListener { openSettings() }
 
@@ -1062,6 +1083,8 @@ class MainActivity : Activity() {
         )
         settingsPanel = overlay
     }
+
+    private fun divider(argb: Int): View = View(this).apply { setBackgroundColor(argb) }
 
     /** 改分辨率 / 帧率要重开会话 */
     private fun restartCamera() {
@@ -1205,6 +1228,8 @@ class MainActivity : Activity() {
 
         when (mode) {
             CameraEngine.Mode.AUTO -> {
+                // 从 M 档切回来时，evDial 里可能还是 M 的曝光指示值，必须恢复成真实补偿
+                evDial.value = evValueFromIndex(camera.evIndex)
                 evDial.caption = "EV"
                 evDial.format = { v -> String.format("%+.1f", evFromValue(v)) }
             }
@@ -1212,6 +1237,7 @@ class MainActivity : Activity() {
             CameraEngine.Mode.S -> {
                 shutterWheel.value = shutterValueFromNs(camera.manualShutterNs)
                 isoWheel.value = isoValueFromIso(camera.sModeIso)
+                evDial.value = evValueFromIndex(camera.evIndex)   // 同上：恢复真实补偿
                 evDial.caption = "EV"
                 evDial.format = { v -> String.format("%+.1f", evFromValue(v)) }
                 lastEv = evFromValue(evDial.value)
@@ -1220,7 +1246,9 @@ class MainActivity : Activity() {
             CameraEngine.Mode.M -> {
                 shutterWheel.value = shutterValueFromNs(camera.manualShutterNs)
                 isoWheel.value = isoValueFromIso(camera.manualIso)
-                // M 档 EV 只是曝光指示器
+                // M 档 EV 只是曝光指示器：不能写回 evIndex，也不沿用上一档的值，
+                // 先放在 0，等下一次测光刷新
+                evDial.value = 0.5f
                 evDial.caption = "曝光"
                 evDial.format = { v -> String.format("%+.1f", v * 4f - 2f) }
             }

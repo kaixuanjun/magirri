@@ -432,6 +432,8 @@ class CameraEngine(private val context: Context) {
         val rec = lastRecordTexture
         activeLensId = lens.id
         zoom = 1f
+        targetZoom = 1f
+        zoomTicking = false
         close()
         open(tex, rec)
         onLensSwitched?.invoke()
@@ -636,14 +638,38 @@ class CameraEngine(private val context: Context) {
      * 真正生效的倍数不靠猜，而是从 CaptureResult 里读回来告诉 UI。
      */
     /**
-     * 变焦：直接交给相机（`CONTROL_ZOOM_RATIO`）。相机端的 zoom 是连续的，
-     * 只要别一次跨太多档就不会跳；真正生效的倍数从 CaptureResult 读回来。
+     * 变焦：拨轮只给目标值，真正的 zoom 由 30Hz 的插值线程一点点推过去。
+     *
+     * 直接把目标值甩给相机会有两个问题：
+     *  1. 拨轮回调是像素级的，忽快忽慢，相机的 zoom 就跟着一顿一顿；
+     *  2. 每次 `setRepeatingRequest` 到生效有几帧延迟，步子大了就成了跳变。
+     * 现在每 33ms 只走剩余距离的 28%（约 150ms 收敛），并且这一步**不走 60ms 合并**，
+     * 保证相机拿到的是细密的小步。
      */
     fun setZoom(ratio: Float) {
-        val z = ratio.coerceIn(1f, controls.maxZoom)
-        if (Math.abs(z - zoom) < 0.01f) return
-        zoom = z
-        reapply()
+        targetZoom = ratio.coerceIn(1f, controls.maxZoom)
+        if (!zoomTicking) {
+            zoomTicking = true
+            handler?.post(zoomTicker)
+        }
+    }
+
+    private var targetZoom = 1f
+    private var zoomTicking = false
+
+    private val zoomTicker = object : Runnable {
+        override fun run() {
+            val d = targetZoom - zoom
+            if (Math.abs(d) < 0.004f) {
+                zoom = targetZoom
+                zoomTicking = false
+                reapply(immediate = true)   // 收尾，确保最终值落地
+                return
+            }
+            zoom = (zoom + d * 0.28f).coerceIn(1f, controls.maxZoom)
+            reapply(immediate = true)       // 小步直发，不走合并
+            handler?.postDelayed(this, 33)
+        }
     }
 
     /** 相机实际生效的变焦（含 HAL 内部换镜头造成的跳变） */

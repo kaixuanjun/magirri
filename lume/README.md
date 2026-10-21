@@ -389,3 +389,14 @@ overlay（条目自己 clickable，会正常吃掉）。
 之前用 `setAutoSizeTextTypeUniformWithConfiguration` 还是截断——因为按钮是 `WRAP_CONTENT`，
 自适应没有宽度约束可用。改成 **`MATCH_PARENT` 撑满列宽 + 字号自适应 7~13sp**，
 四颗胶囊宽度统一、文字居中，`快门 1/125` 任何密度下都不会被切。
+
+## EV 与曝光指示器分离
+
+M 档里的 EV 是**曝光指示器**（由测光算出当前曝光偏差），不是补偿值。它和 AUTO/S 的
+曝光补偿共用同一个滑块，所以切档时必须把滑块恢复成真实补偿：
+
+- 进 AUTO / S：`evDial.value = evValueFromIndex(camera.evIndex)`
+- 进 M：指示器先归中，随后由测光循环刷新；**不写回 `evIndex`**
+
+不这么处理的话，M 档测光算出来的指示值会被当成曝光补偿带到下一个档位。
+实测切档序列：`EV +0.7`（AUTO）→ `曝光 +0.7`（M，灰）→ `EV +0.7`（S）→ `EV +0.7`（AUTO）。
