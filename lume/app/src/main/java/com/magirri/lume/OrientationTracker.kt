@@ -28,6 +28,9 @@ class OrientationTracker(context: Context) : SensorEventListener {
     /** 最近一次稳定下来的方向 */
     @Volatile
     var degrees: Int = Surface.ROTATION_0
+
+    /** 连续横滚角（-45..45），水平仪用；0 = 手机横放水平 */
+    @Volatile var rollDeg: Float = 0f
         private set
 
     /** 方向变化时回调（可能被传感器线程调用） */
@@ -46,6 +49,12 @@ class OrientationTracker(context: Context) : SensorEventListener {
     }
 
     override fun onSensorChanged(event: SensorEvent) {
+
+        // 横屏下 y 轴近似重力方向，x/z 决定俯仰与横滚；这里只取横滚
+        val ay = event.values[1]
+        val az = event.values[2]
+        rollDeg = Math.toDegrees(Math.atan2(az.toDouble(), ay.toDouble())).toFloat()
+
         if (event.sensor.type != Sensor.TYPE_ACCELEROMETER) return
         val x = event.values[0]
         val y = event.values[1]

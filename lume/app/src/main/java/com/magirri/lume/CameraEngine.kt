@@ -115,6 +115,12 @@ class CameraEngine(private val context: Context) {
     /** AE 帧率区间（按 targetFps 选出来的） */
     private var fpsRange: android.util.Range<Int>? = null
 
+    /**
+     * 从手动档切回自动时，AE 会从"上一个手动曝光"慢慢爬。发一次 PRECAPTURE 让它快速收敛，
+     * AE_STATE 到 CONVERGED 后复位。
+     */
+    @Volatile private var aePrecapture = false
+
     /** AF 触发位：点一下置 START，对焦完成后复位 IDLE */
     @Volatile private var afTrigger = CaptureRequest.CONTROL_AF_TRIGGER_IDLE
 
@@ -189,6 +195,16 @@ class CameraEngine(private val context: Context) {
                     st == CaptureResult.CONTROL_AF_STATE_INACTIVE
                 ) {
                     afTrigger = CaptureRequest.CONTROL_AF_TRIGGER_IDLE
+                    reapply()
+                }
+            }
+            // AE 预拍收敛完成就复位，别一直挂着
+            if (aePrecapture) {
+                val aeState = result.get(CaptureResult.CONTROL_AE_STATE)
+                if (aeState == CaptureResult.CONTROL_AE_STATE_CONVERGED ||
+                    aeState == CaptureResult.CONTROL_AE_STATE_LOCKED
+                ) {
+                    aePrecapture = false
                     reapply()
                 }
             }
@@ -531,6 +547,11 @@ class CameraEngine(private val context: Context) {
         when (mode) {
             Mode.AUTO -> {
                 builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
+                builder.set(
+                    CaptureRequest.CONTROL_AE_PRECAPTURE_TRIGGER,
+                    if (aePrecapture) CaptureRequest.CONTROL_AE_PRECAPTURE_TRIGGER_START
+                    else CaptureRequest.CONTROL_AE_PRECAPTURE_TRIGGER_IDLE
+                )
                 if (controls.hasEv) {
                     builder.set(
                         CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION,
@@ -604,7 +625,10 @@ class CameraEngine(private val context: Context) {
             }
             Mode.AUTO -> Unit
         }
-        reapply()
+        // 从手动档切回自动：发一次 AE 预拍，让它快速收敛（否则会从手动曝光的
+        // 那个点慢慢爬，体感要等好几秒）
+        if (m == Mode.AUTO) aePrecapture = true
+        reapply(immediate = true)
     }
 
     /** S 档拨快门 */

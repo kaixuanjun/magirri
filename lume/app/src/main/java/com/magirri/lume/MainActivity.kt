@@ -55,6 +55,13 @@ class MainActivity : Activity() {
     private var focusDiopters = 0f
     private lateinit var settingsBtn: TextView
     private lateinit var lensBtn: TextView
+    private lateinit var overlay: OverlayView
+    private var histOn = false
+    private var zebraOn = false
+    private var peakOn = false
+    private var levelOn = false
+    private var gridOn = false
+    private var assistRows: Map<String, TextView> = emptyMap()
     private var lensIndexNow = 0
     private lateinit var settingsPanel: View
     private lateinit var ratioValue: TextView
@@ -320,6 +327,14 @@ class MainActivity : Activity() {
             FrameLayout.LayoutParams(dp(320), dp(320), Gravity.CENTER)
         )
 
+
+        overlay = OverlayView(this).apply { isClickable = false }
+        previewBox.addView(
+            overlay,
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT
+            )
+        )
 
         status = TextView(this).apply {
             text = "ARRI 直出 · 就绪"
@@ -704,6 +719,7 @@ class MainActivity : Activity() {
         ui.postDelayed({ hideSystemBars() }, 400)
         ui.postDelayed({ hideSystemBars() }, 1200)
         startStatusTicker()
+        startOverlayTicker()
         waitForFirstFrame()
     }
 
@@ -832,6 +848,22 @@ class MainActivity : Activity() {
         window.decorView.requestApplyInsets()
     }
 
+    /** 辅助叠加层刷新：直方图 4Hz，水平仪 10Hz */
+    private fun startOverlayTicker() {
+        val tick = object : Runnable {
+            override fun run() {
+                if (histOn) {
+                    preview.requestLuma()
+                    overlay.histogram = preview.histogram
+                }
+                if (levelOn) overlay.rollDeg = orientation.rollDeg
+                if (histOn || levelOn) overlay.invalidate()
+                ui.postDelayed(this, 120)
+            }
+        }
+        ui.postDelayed(tick, 0)
+    }
+
     /** 自绘状态条：时间 + 电量，20 秒刷一次 */
     private fun startStatusTicker() {
         val tick = object : Runnable {
@@ -926,22 +958,26 @@ class MainActivity : Activity() {
         ratioValue.text = RATIO_NAMES[ratioIndex]
         resValue.text = RES_NAMES[resIndex]
         fpsValue.text = FPS_NAMES[fpsIndex]
+        assistRows["直方图"]?.text = if (histOn) "开" else "关"
+        assistRows["斑马线"]?.text = if (zebraOn) "开" else "关"
+        assistRows["对焦峰值"]?.text = if (peakOn) "开" else "关"
+        assistRows["水平仪"]?.text = if (levelOn) "开" else "关"
+        assistRows["三分线"]?.text = if (gridOn) "开" else "关"
     }
 
     /**
      * 相机式菜单：全屏、无圆角、无灰底、紧凑排版。
-     * 左侧一级用一条白色竖条指示当前项，右侧二级是「标签 …‹ 值 ›」。
+     * 左侧一级菜单（拍摄 / 辅助），右侧二级菜单；右上角返回按钮。
      */
     private fun buildSettingsPanel() {
-        val overlay = FrameLayout(this).apply {
-            setBackgroundColor(0xFF000000.toInt())
-        }
+        val root = FrameLayout(this).apply { setBackgroundColor(0xFF000000.toInt()) }
         val page = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(30), dp(16), dp(30), dp(16))
+            isClickable = true     // 吃掉点击，不能穿透到取景器
         }
 
-        // ---- 标题行 ----
+        // ---- 标题行 + 返回 ----
         val titleRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -953,58 +989,69 @@ class MainActivity : Activity() {
             letterSpacing = 0.06f
         }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         titleRow.addView(TextView(this).apply {
-            text = "返回键关闭"
-            setTextColor(0x59FFFFFF)
-            textSize = 11f
+            text = "返回"
+            setTextColor(Color.WHITE)
+            textSize = 13f
+            setPadding(dp(14), dp(6), dp(14), dp(6))
+            setBackgroundColor(0x22FFFFFF)
+            setOnClickListener { openSettings() }
         })
         page.addView(titleRow, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
         ).apply { bottomMargin = dp(10) })
-
         page.addView(divider(0x33FFFFFF), LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, dp(1)
         ).apply { bottomMargin = dp(6) })
 
         // ---- 主体 ----
-        val body = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-        }
+        val body = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
 
-        // 左：一级菜单，选中项用白色竖条指示（不用底色）
+        // 左：一级菜单
         val leftCol = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(0, dp(4), dp(20), 0)
         }
-        val catRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-        }
-        catRow.addView(View(this).apply { setBackgroundColor(Color.WHITE) },
-            LinearLayout.LayoutParams(dp(3), dp(18)).apply { rightMargin = dp(10) })
-        catRow.addView(TextView(this).apply {
-            text = "拍摄"
-            setTextColor(Color.WHITE)
-            textSize = 14f
-        })
-        leftCol.addView(catRow, LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
-        ).apply { topMargin = dp(8) })
-
-        body.addView(leftCol, LinearLayout.LayoutParams(dp(150), ViewGroup.LayoutParams.MATCH_PARENT)
-            .apply { rightMargin = dp(10) })
-
-        // 右：二级菜单，标签 …‹ 值 ›
-        val rightCol = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-        }
-
-        fun item(label: String, onTap: () -> Unit): TextView {
+        fun category(label: String): LinearLayout {
             val row = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
-                setPadding(0, dp(11), 0, dp(11))
+                setPadding(0, dp(9), 0, dp(9))
                 isClickable = true
-                setOnClickListener { onTap() }
+            }
+            val bar = View(this).apply { setBackgroundColor(Color.WHITE) }
+            row.addView(bar, LinearLayout.LayoutParams(dp(3), dp(16)).apply { rightMargin = dp(10) })
+            row.addView(TextView(this).apply {
+                text = label
+                setTextColor(Color.WHITE)
+                textSize = 14f
+            })
+            leftCol.addView(row, LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
+            ))
+            return row
+        }
+        val catShoot = category("拍摄")
+        val catAssist = category("辅助")
+        body.addView(leftCol, LinearLayout.LayoutParams(dp(150), ViewGroup.LayoutParams.MATCH_PARENT)
+            .apply { rightMargin = dp(10) })
+
+        // 右：二级菜单（两页）
+        val rightWrap = FrameLayout(this)
+        val shootPage = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val assistPage = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+        }
+
+        /** 一行：标签 …‹ 值 ›，左右箭头独立可点 */
+        fun valueRow(
+            parent: LinearLayout, label: String,
+            onPrev: () -> Unit, onNext: () -> Unit,
+        ): TextView {
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(0, dp(10), 0, dp(10))
             }
             row.addView(TextView(this).apply {
                 text = label
@@ -1016,72 +1063,147 @@ class MainActivity : Activity() {
                 setTextColor(Color.WHITE)
                 textSize = 13f
                 gravity = Gravity.CENTER
+                setPadding(dp(12), 0, dp(12), 0)
             }
-            row.addView(TextView(this).apply {
-                text = "‹"
-                setTextColor(0x66FFFFFF)
-                textSize = 13f
-                setPadding(0, 0, dp(10), 0)
-            })
+            row.addView(arrow("‹") { onPrev() })
             row.addView(value)
-            row.addView(TextView(this).apply {
-                text = "›"
-                setTextColor(0x66FFFFFF)
-                textSize = 13f
-                setPadding(dp(10), 0, 0, 0)
-            })
-            rightCol.addView(row, LinearLayout.LayoutParams(
+            row.addView(arrow("›") { onNext() })
+            parent.addView(row, LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
             ))
-            rightCol.addView(divider(0x1FFFFFFF), LinearLayout.LayoutParams(
+            parent.addView(divider(0x1FFFFFFF), LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(1)
             ))
             return value
         }
 
-        ratioValue = item("画幅") {
+        ratioValue = valueRow(shootPage, "画幅", {
+            ratioIndex = (RATIOS.size + ratioIndex - 1) % RATIOS.size
+            applyFrameRatio(); refreshSettings()
+        }, {
             ratioIndex = (ratioIndex + 1) % RATIOS.size
-            applyFrameRatio()
-            refreshSettings()
-        }
-        resValue = item("分辨率") {
+            applyFrameRatio(); refreshSettings()
+        })
+        resValue = valueRow(shootPage, "分辨率", {
+            resIndex = (RES_NAMES.size + resIndex - 1) % RES_NAMES.size
+            camera.recordPreference = resIndex; restartCamera(); refreshSettings()
+        }, {
             resIndex = (resIndex + 1) % RES_NAMES.size
-            camera.recordPreference = resIndex
-            restartCamera()
-            refreshSettings()
-        }
-        fpsValue = item("帧率") {
+            camera.recordPreference = resIndex; restartCamera(); refreshSettings()
+        })
+        fpsValue = valueRow(shootPage, "帧率", {
+            fpsIndex = (FPS_NAMES.size + fpsIndex - 1) % FPS_NAMES.size
+            camera.targetFps = FPS_VALUES[fpsIndex]; restartCamera(); refreshSettings()
+        }, {
             fpsIndex = (fpsIndex + 1) % FPS_NAMES.size
-            camera.targetFps = FPS_VALUES[fpsIndex]
-            restartCamera()
-            refreshSettings()
-        }
-
-        rightCol.addView(TextView(this).apply {
+            camera.targetFps = FPS_VALUES[fpsIndex]; restartCamera(); refreshSettings()
+        })
+        shootPage.addView(TextView(this).apply {
             text = "分辨率 / 帧率 改完会重启相机"
             setTextColor(0x4DFFFFFF)
             textSize = 10f
             setPadding(0, dp(10), 0, 0)
         })
 
-        body.addView(rightCol, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
+        // 辅助页：五个开关
+        val assistValues = LinkedHashMap<String, TextView>()
+
+        fun toggleRow(label: String, get: () -> Boolean, set: (Boolean) -> Unit) {
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(0, dp(10), 0, dp(10))
+                isClickable = true
+            }
+            row.addView(TextView(this).apply {
+                text = label
+                setTextColor(0xCCCCCCCC.toInt())
+                textSize = 13f
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            val value = TextView(this).apply {
+                setTextColor(Color.WHITE)
+                textSize = 13f
+                gravity = Gravity.CENTER
+                setPadding(dp(12), 0, dp(12), 0)
+            }
+            row.addView(arrow("‹") { set(!get()); refreshSettings() })
+            row.addView(value)
+            row.addView(arrow("›") { set(!get()); refreshSettings() })
+            row.setOnClickListener { set(!get()); refreshSettings() }
+            assistPage.addView(row, LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+            ))
+            assistPage.addView(divider(0x1FFFFFFF), LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(1)
+            ))
+            assistValues[label] = value
+        }
+
+        toggleRow("直方图", { histOn }, { histOn = it; overlay.histogramOn = it })
+        toggleRow("斑马线", { zebraOn }, { zebraOn = it; preview.zebraOn = it })
+        toggleRow("对焦峰值", { peakOn }, { peakOn = it; preview.peakingOn = it })
+        toggleRow("水平仪", { levelOn }, { levelOn = it; overlay.levelOn = it })
+        toggleRow("三分线", { gridOn }, { gridOn = it; overlay.gridOn = it })
+        assistPage.addView(TextView(this).apply {
+            text = "直方图显示在左上角；斑马线标过曝；峰值标合焦边缘"
+            setTextColor(0x4DFFFFFF)
+            textSize = 10f
+            setPadding(0, dp(10), 0, 0)
+        })
+
+        rightWrap.addView(shootPage, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT
+        ))
+        rightWrap.addView(assistPage, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT
+        ))
+        body.addView(rightWrap, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
+
         page.addView(body, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f
         ))
-
-        overlay.addView(page, FrameLayout.LayoutParams(
+        root.addView(page, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT
         ))
-        page.setOnClickListener { openSettings() }
-        overlay.setOnClickListener { openSettings() }
+
+        // 一级菜单切换
+        catShoot.setOnClickListener {
+            shootPage.visibility = View.VISIBLE
+            assistPage.visibility = View.GONE
+            setCategoryBar(catShoot, catAssist)
+        }
+        catAssist.setOnClickListener {
+            shootPage.visibility = View.GONE
+            assistPage.visibility = View.VISIBLE
+            setCategoryBar(catAssist, catShoot)
+        }
+        setCategoryBar(catShoot, catAssist)
 
         (window.decorView as FrameLayout).addView(
-            overlay,
+            root,
             FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT
             )
         )
-        settingsPanel = overlay
+        settingsPanel = root
+        assistRows = assistValues
+    }
+
+    /** 一级菜单选中态：选中的竖条白色，另一个透明 */
+    private fun setCategoryBar(sel: LinearLayout, other: LinearLayout) {
+        (sel.getChildAt(0) as View).setBackgroundColor(Color.WHITE)
+        (other.getChildAt(0) as View).setBackgroundColor(Color.TRANSPARENT)
+    }
+
+    /** ‹ › 箭头 */
+    private fun arrow(sym: String, onTap: () -> Unit): TextView = TextView(this).apply {
+        text = sym
+        setTextColor(0x99FFFFFF.toInt())
+        textSize = 15f
+        gravity = Gravity.CENTER
+        setPadding(dp(12), dp(4), dp(12), dp(4))
+        isClickable = true
+        setOnClickListener { onTap() }
     }
 
     private fun divider(argb: Int): View = View(this).apply { setBackgroundColor(argb) }
@@ -1291,9 +1413,12 @@ class MainActivity : Activity() {
                         val target = (0.45f * Math.pow(2.0, ev.toDouble())).toFloat()
                             .coerceIn(0.10f, 0.90f)
                         val ratio = target / luma
-                        if (ratio < 0.88f || ratio > 1.14f) {
-                            val gain = Math.pow(ratio.toDouble(), 0.45).toFloat()
-                                .coerceIn(0.8f, 1.25f)
+                        val far = ratio < 0.62f || ratio > 1.6f
+                        if (far || ratio < 0.88f || ratio > 1.14f) {
+                            // 差得多就大步追（切档后常见），差得少才小步微调
+                            val gain = Math.pow(ratio.toDouble(), if (far) 0.9 else 0.45)
+                                .toFloat()
+                                .coerceIn(if (far) 0.25f else 0.8f, if (far) 4f else 1.25f)
                             val cur = camera.sModeIso
                             val next = (cur * gain).toInt().coerceIn(c.isoMin, c.isoMax)
                             if (next != cur) {
@@ -1301,6 +1426,9 @@ class MainActivity : Activity() {
                                 updateWheelButtons()
                             }
                         }
+                        // 离目标远的时候 300ms 一次，收敛后回到 800ms
+                        ui.postDelayed(this, if (far) 300 else 800)
+                        return
                     }
                 }
 

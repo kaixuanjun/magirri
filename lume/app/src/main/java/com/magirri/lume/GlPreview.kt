@@ -121,6 +121,13 @@ class GlPreview(
 
     private var uQuadOffset = 0
     private var uStrength = 0
+    private var uZebra = 0
+    private var uPeaking = 0
+    private var uTexel = 0
+
+    /** 辅助显示开关（由 UI 设置） */
+    @Volatile var zebraOn = false
+    @Volatile var peakingOn = false
 
     /** 0..1：方便对比"未调色 / 调色" */
     var strength = 1f
@@ -203,6 +210,9 @@ class GlPreview(
 
         uQuadOffset = GLES20.glGetUniformLocation(program, "uQuadOffset")
         uStrength = GLES20.glGetUniformLocation(program, "uStrength")
+        uZebra = GLES20.glGetUniformLocation(program, "uZebra")
+        uPeaking = GLES20.glGetUniformLocation(program, "uPeaking")
+        uTexel = GLES20.glGetUniformLocation(program, "uTexel")
 
         // 外部纹理（相机）
         val ids = IntArray(1)
@@ -515,6 +525,10 @@ class GlPreview(
 
     // ---- 取景亮度：给 S 档的软件自动 ISO 用 ----
     @Volatile private var lumaWanted = false
+
+    /** 16 档亮度直方图（0..1），每次测光顺带算一份 */
+    @Volatile var histogram: FloatArray = FloatArray(16)
+        private set
     @Volatile var lastLuma = -1f
         private set
 
@@ -569,6 +583,20 @@ class GlPreview(
         val buf = java.nio.ByteBuffer.allocateDirect(MW * MH * 4)
         GLES20.glReadPixels(0, 0, MW, MH, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, buf)
         GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
+
+        // 顺手统计直方图（3072 个样本，够画个概览）
+        val bins = FloatArray(16)
+        for (i in 0 until MW * MH) {
+            val r = buf.get(i * 4).toInt() and 0xFF
+            val g = buf.get(i * 4 + 1).toInt() and 0xFF
+            val b = buf.get(i * 4 + 2).toInt() and 0xFF
+            val l = (r * 0.299f + g * 0.587f + b * 0.114f) / 255f
+            bins[(l * 15f).toInt().coerceIn(0, 15)] += 1f
+        }
+        var maxBin = 1f
+        for (v in bins) if (v > maxBin) maxBin = v
+        for (i in bins.indices) bins[i] /= maxBin
+        histogram = bins
 
         fun lumaAt(i: Int): Float {
             val r = buf.get(i * 4).toInt() and 0xFF
@@ -643,6 +671,9 @@ class GlPreview(
         // 旋转 UV 等于画面反向旋转，所以传负角度，画面才是顺时针转
         GLES20.glUniform1f(uRotation, rotationRad)
         GLES20.glUniform1f(uStrength, strength)
+        GLES20.glUniform1i(uZebra, if (zebraOn) 1 else 0)
+        GLES20.glUniform1i(uPeaking, if (peakingOn) 1 else 0)
+        GLES20.glUniform2f(uTexel, 1f / 1280f, 1f / 720f)
         // 变焦只由相机做（CONTROL_ZOOM_RATIO）。两级变焦不可能同帧生效，
         // 每次相机跳一下 GL 就要补一下，画面就是一闪一闪的。这里只做画幅裁切。
         GLES20.glUniform2f(uTexScale, cropX, cropY)
@@ -724,7 +755,15 @@ class GlPreview(
             uniform sampler2D uLut;
             uniform float uLutSize;
             uniform float uStrength;
+            uniform int uZebra;
+            uniform int uPeaking;
+            uniform vec2 uTexel;
             varying vec2 vUv;
+
+            float lumOf(vec2 uv) {
+                vec3 c = texture2D(uTex, uv).rgb;
+                return dot(c, vec3(0.299, 0.587, 0.114));
+            }
 
             void main() {
                 vec3 src = texture2D(uTex, vUv).rgb;
@@ -743,7 +782,32 @@ class GlPreview(
                 vec3 c1 = texture2D(uLut, t1).rgb;
                 vec3 graded = mix(c0, c1, fbv);
 
-                gl_FragColor = vec4(mix(src, graded, uStrength), 1.0);
+                vec3 col = mix(src, graded, uStrength);
+
+                // 对焦峰值：四邻域亮度差够大就是合焦边缘，染红
+                if (uPeaking == 1) {
+                    float l = dot(col, vec3(0.299, 0.587, 0.114));
+                    float lx = lumOf(vUv + vec2(uTexel.x * 2.0, 0.0));
+                    float rx = lumOf(vUv - vec2(uTexel.x * 2.0, 0.0));
+                    float uy = lumOf(vUv + vec2(0.0, uTexel.y * 2.0));
+                    float dy = lumOf(vUv - vec2(0.0, uTexel.y * 2.0));
+                    // 用「两侧之和」判局部极值：缓变/整体偏亮的区域两侧差会互相抵消，
+                    // 只有真正的边缘才两侧都差。
+                    float eh = abs(l - lx) + abs(l - rx);
+                    float ev = abs(l - uy) + abs(l - dy);
+                    if (max(eh, ev) > 0.28) col = mix(col, vec3(1.0, 0.1, 0.1), 0.8);
+                }
+
+                // 斑马线：过曝区叠斜纹
+                if (uZebra == 1) {
+                    float l2 = dot(col, vec3(0.299, 0.587, 0.114));
+                    if (l2 > 0.86) {
+                        float st = step(0.5, fract((vUv.x * 1.6 + vUv.y) * 90.0));
+                        col = mix(col, vec3(0.0, 0.0, 0.0), st * 0.6);
+                    }
+                }
+
+                gl_FragColor = vec4(col, 1.0);
             }
         """
     }
