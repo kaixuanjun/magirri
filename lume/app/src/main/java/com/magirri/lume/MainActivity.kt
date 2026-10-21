@@ -758,13 +758,38 @@ class MainActivity : Activity() {
             else -> focusWheel
         }
         if (!w.isEnabled) return
-        wheels.forEach { it.visibility = if (it === w) View.VISIBLE else View.GONE }
+        // 其他轮子直接收掉（不animate，避免两个轮子叠着淡入淡出）
+        wheels.forEach {
+            if (it !== w) {
+                it.animate().cancel()
+                it.visibility = View.GONE
+                it.alpha = 1f
+                it.translationX = 0f
+            }
+        }
+        w.animate().cancel()
+        w.visibility = View.VISIBLE
+        w.alpha = 0f
+        w.translationX = dp(-12).toFloat()
+        w.animate().alpha(1f).translationX(0f).setDuration(220).start()
         openWheelKind = kind
         updateWheelButtons()
     }
 
     private fun closeWheel() {
-        wheels.forEach { it.visibility = View.GONE }
+        wheels.forEach { w ->
+            if (w.visibility == View.VISIBLE) {
+                w.animate().cancel()
+                w.animate().alpha(0f).translationX(dp(-12).toFloat()).setDuration(160)
+                    .withEndAction {
+                        w.visibility = View.GONE
+                        w.alpha = 1f
+                        w.translationX = 0f
+                    }.start()
+            } else {
+                w.visibility = View.GONE
+            }
+        }
         openWheelKind = -1
         updateWheelButtons()
     }
@@ -944,14 +969,43 @@ class MainActivity : Activity() {
 
     // ================= 设置页 =================
 
+    private var settingsOpenedAt = 0L
+
     private fun openSettings() {
-        if (::settingsPanel.isInitialized && settingsPanel.visibility == View.VISIBLE) {
-            settingsPanel.visibility = View.GONE
+        if (System.currentTimeMillis() - settingsOpenedAt < 350) return
+        if (!::settingsPanel.isInitialized) buildSettingsPanel()
+        val showing = settingsPanel.visibility == View.VISIBLE && settingsPanel.alpha > 0.6f
+        if (showing) {
+            settingsPanel.animate().cancel()
+            settingsPanel.animate().alpha(0f).translationY(dp(-10).toFloat())
+                .setDuration(180)
+                .withEndAction {
+                    settingsPanel.visibility = View.GONE
+                    settingsPanel.alpha = 1f
+                    settingsPanel.translationY = 0f
+                }.start()
             return
         }
-        if (!::settingsPanel.isInitialized) buildSettingsPanel()
-        settingsPanel.visibility = View.VISIBLE
+        settingsOpenedAt = System.currentTimeMillis()
         refreshSettings()
+        settingsPanel.animate().cancel()
+        settingsPanel.visibility = View.VISIBLE
+        settingsPanel.alpha = 0f
+        settingsPanel.translationY = dp(12).toFloat()
+        settingsPanel.animate().alpha(1f).translationY(0f).setDuration(240).start()
+    }
+
+    /** 一级菜单切换：右侧内容淡入 */
+    private fun crossFade(show: View, hide: View) {
+        hide.animate().cancel()
+        hide.animate().alpha(0f).setDuration(110).withEndAction {
+            hide.visibility = View.GONE
+            hide.alpha = 1f
+        }.start()
+        show.animate().cancel()
+        show.visibility = View.VISIBLE
+        show.alpha = 0f
+        show.animate().alpha(1f).setDuration(200).start()
     }
 
     private fun refreshSettings() {
@@ -1168,13 +1222,11 @@ class MainActivity : Activity() {
 
         // 一级菜单切换
         catShoot.setOnClickListener {
-            shootPage.visibility = View.VISIBLE
-            assistPage.visibility = View.GONE
+            if (shootPage.visibility != View.VISIBLE) crossFade(shootPage, assistPage)
             setCategoryBar(catShoot, catAssist)
         }
         catAssist.setOnClickListener {
-            shootPage.visibility = View.GONE
-            assistPage.visibility = View.VISIBLE
+            if (assistPage.visibility != View.VISIBLE) crossFade(assistPage, shootPage)
             setCategoryBar(catAssist, catShoot)
         }
         setCategoryBar(catShoot, catAssist)
