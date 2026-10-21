@@ -495,6 +495,7 @@ class GlPreview(
                     drawFrame(
                         -encRotation * Math.PI.toFloat() / 180f, 1f, 1f, encWidth, encHeight,
                         if (recordStreamActive) recTexId else texId,
+                        assist = false,       // 辅助图形不能进成片
                     )
                     // pts 必须和 encBaseNs 同一个时钟域。相机给的 st.timestamp 是
                     // CLOCK_BOOTTIME（含休眠），System.nanoTime() 是 CLOCK_MONOTONIC——
@@ -579,7 +580,7 @@ class GlPreview(
     private fun measureLuma(): Float {
         if (meterFbo == 0) return -1f
         GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, meterFbo)
-        drawFrame(-rotationDeg * Math.PI.toFloat() / 180f, 1f, 1f, MW, MH)
+        drawFrame(-rotationDeg * Math.PI.toFloat() / 180f, 1f, 1f, MW, MH, assist = false)
         val buf = java.nio.ByteBuffer.allocateDirect(MW * MH * 4)
         GLES20.glReadPixels(0, 0, MW, MH, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, buf)
         GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
@@ -649,9 +650,14 @@ class GlPreview(
     }
 
     /** 一次完整的绘制：旋转 + 顶点缩放 + LUT 采样 */
+    /**
+     * @param assist 是否叠加辅助图形（斑马线 / 对焦峰值）。录视频和测光都必须传 false，
+     * 否则红线会被烘进成片、也会污染直方图。
+     */
     private fun drawFrame(
         rotationRad: Float, qx: Float, qy: Float, vw: Int, vh: Int,
         sourceTex: Int = -1,
+        assist: Boolean = true,
     ) {
         GLES20.glViewport(0, 0, vw, vh)
         GLES20.glClearColor(0f, 0f, 0f, 1f)
@@ -671,8 +677,8 @@ class GlPreview(
         // 旋转 UV 等于画面反向旋转，所以传负角度，画面才是顺时针转
         GLES20.glUniform1f(uRotation, rotationRad)
         GLES20.glUniform1f(uStrength, strength)
-        GLES20.glUniform1i(uZebra, if (zebraOn) 1 else 0)
-        GLES20.glUniform1i(uPeaking, if (peakingOn) 1 else 0)
+        GLES20.glUniform1i(uZebra, if (assist && zebraOn) 1 else 0)
+        GLES20.glUniform1i(uPeaking, if (assist && peakingOn) 1 else 0)
         GLES20.glUniform2f(uTexel, 1f / 1280f, 1f / 720f)
         // 变焦只由相机做（CONTROL_ZOOM_RATIO）。两级变焦不可能同帧生效，
         // 每次相机跳一下 GL 就要补一下，画面就是一闪一闪的。这里只做画幅裁切。
