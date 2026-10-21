@@ -642,6 +642,8 @@ class MainActivity : Activity() {
 
         setContentView(root)
         hideSystemBars()
+        ui.postDelayed({ hideSystemBars() }, 400)
+        ui.postDelayed({ hideSystemBars() }, 1200)
         startStatusTicker()
         waitForFirstFrame()
     }
@@ -743,11 +745,28 @@ class MainActivity : Activity() {
             @Suppress("DEPRECATION")
             window.decorView.systemUiVisibility = immersiveFlags()
         }
+        watchSystemBars()
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
         if (hasFocus) hideSystemBars()
+    }
+
+    /** 系统栏被系统放回来时（下拉通知、切换应用等）立刻再收一次 */
+    private var insetsWatcherSet = false
+    private fun watchSystemBars() {
+        if (insetsWatcherSet) return
+        insetsWatcherSet = true
+        window.decorView.setOnApplyWindowInsetsListener { v, insets ->
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+                val shown = insets.isVisible(android.view.WindowInsets.Type.statusBars()) ||
+                        insets.isVisible(android.view.WindowInsets.Type.navigationBars())
+                if (shown) v.post { hideSystemBars() }
+            }
+            v.onApplyWindowInsets(insets)
+        }
+        window.decorView.requestApplyInsets()
     }
 
     /** 自绘状态条：时间 + 电量，20 秒刷一次 */
@@ -1062,8 +1081,9 @@ class MainActivity : Activity() {
             w.isEnabled = on
         }
 
-        setEnabled(zoomBtn, zoomDial, !autoMode && c.hasZoom)
-        setEnabled(evBtn, evDial, !autoMode && mode != CameraEngine.Mode.M && c.hasEv)
+        // AUTO 下变焦和 EV 仍然可调，只有快门 / ISO 交给相机（灰掉）
+        setEnabled(zoomBtn, zoomDial, c.hasZoom)
+        setEnabled(evBtn, evDial, mode != CameraEngine.Mode.M && c.hasEv)
         setEnabled(shutterBtn, shutterWheel, !autoMode)
         setEnabled(isoBtn, isoWheel, !autoMode && mode == CameraEngine.Mode.M)
 
