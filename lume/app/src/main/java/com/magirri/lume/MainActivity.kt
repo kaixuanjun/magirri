@@ -48,6 +48,11 @@ class MainActivity : Activity() {
 
     private lateinit var ratioBtn: TextView
     private var splashLogo: ImageView? = null
+    private lateinit var focusBtn: TextView
+    private lateinit var mfBtn: TextView
+    private lateinit var focusWheel: WheelView
+    private var focusIndex = 1          // 默认 AF-C
+    private var focusDiopters = 0f
 
     /** 当前画幅索引：0=3:2, 1=16:9, 2=2.35:1 */
 
@@ -359,7 +364,15 @@ class MainActivity : Activity() {
                 updateWheelButtons()
             }
         }
-        wheels = listOf(zoomDial, evDial, shutterWheel, isoWheel)
+        focusWheel = WheelView(this, "对焦").apply {
+            format = { v -> focusText(focusDioptersFromValue(v)) }
+            onChange = { v ->
+                focusDiopters = focusDioptersFromValue(v)
+                camera.setFocusDiopters(focusDiopters)
+                updateWheelButtons()
+            }
+        }
+        wheels = listOf(zoomDial, evDial, shutterWheel, isoWheel, focusWheel)
         wheels.forEach { w ->
             w.visibility = View.GONE
             wheelStrip.addView(
@@ -451,6 +464,26 @@ class MainActivity : Activity() {
             ).apply { topMargin = dp(10) }
         )
 
+        // 对焦模式：AF-S / AF-C / MF
+        focusBtn = TextView(this).apply {
+            text = FOCUS_NAMES[focusIndex]
+            setTextColor(Color.WHITE)
+            textSize = 12f
+            gravity = Gravity.CENTER
+            setPadding(dp(14), dp(8), dp(14), dp(8))
+            background = pill(0x33FFFFFF)
+            setOnClickListener {
+                focusIndex = (focusIndex + 1) % FOCUS_MODES.size
+                applyFocusMode()
+            }
+        }
+        camCol.addView(
+            focusBtn,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { topMargin = dp(10) }
+        )
+
         // 画幅：3:2 / 16:9 / 2.35:1，循环切换
         ratioBtn = TextView(this).apply {
             text = RATIO_NAMES[ratioIndex]
@@ -478,6 +511,18 @@ class MainActivity : Activity() {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.START
         }
+        mfBtn = wheelButton("对焦", "∞", MF).apply {
+            textSize = 11f
+            setPadding(dp(9), dp(8), dp(9), dp(8))
+        }
+        mfBtn.visibility = View.GONE          // 只有 MF 档才出现
+        valueCol.addView(
+            mfBtn,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { topMargin = dp(10) }
+        )
+
         zoomBtn = wheelButton("变焦", "1.0×", ZOOM)
         evBtn = wheelButton("EV", "+0.0", EV)
         shutterBtn = wheelButton("快门", "1/125", SHUTTER)
@@ -522,6 +567,7 @@ class MainActivity : Activity() {
             setTextColor(Color.WHITE)
             textSize = 12f
             gravity = Gravity.CENTER
+            isSingleLine = true          // 「对焦 21cm」这类长文案不折行
             setPadding(dp(14), dp(7), dp(14), dp(7))
             // 按钮自带灰色圆角胶囊；面板底是纯黑，两者区分开
             background = pill(0x2EFFFFFF)
@@ -541,7 +587,8 @@ class MainActivity : Activity() {
             ZOOM -> zoomDial
             EV -> evDial
             SHUTTER -> shutterWheel
-            else -> isoWheel
+            ISO -> isoWheel
+            else -> focusWheel
         }
         if (!w.isEnabled) return
         wheels.forEach { it.visibility = if (it === w) View.VISIBLE else View.GONE }
@@ -569,6 +616,8 @@ class MainActivity : Activity() {
         } else {
             camera.manualIso
         }
+        mfBtn.text = "对焦 " + focusText(focusDiopters)
+
         for ((i, b) in listOf(zoomBtn, evBtn, shutterBtn, isoBtn).withIndex()) {
             b.background = pill(if (i == openWheelKind) 0x59FFFFFF else 0x2EFFFFFF)
         }
@@ -613,6 +662,33 @@ class MainActivity : Activity() {
         // 画面有效宽高比 = target，交给取景器做等比适配
         preview.cameraAspect = if (sideways) 1f / target else target
         preview.requestRender()
+    }
+
+    /** 切对焦模式：相机侧改 AF 模式，UI 侧决定要不要露出「对焦」按钮 */
+    private fun applyFocusMode() {
+        // 不支持的机器跳过 MF
+        if (FOCUS_MODES[focusIndex] == CameraEngine.Focus.MF &&
+            !camera.controls.hasManualFocus
+        ) {
+            focusIndex = 0
+        }
+        val f = FOCUS_MODES[focusIndex]
+        camera.setFocusMode(f)
+        focusBtn.text = FOCUS_NAMES[focusIndex]
+        mfBtn.visibility = if (f == CameraEngine.Focus.MF) View.VISIBLE else View.GONE
+        if (openWheelKind == MF && f != CameraEngine.Focus.MF) closeWheel()
+        updateWheelButtons()
+    }
+
+    /** 0..1 → 屈光度（0 = 无穷远，越大越近） */
+    private fun focusDioptersFromValue(v: Float): Float =
+        v * camera.controls.focusMaxDiopters
+
+    /** 屈光度 → 人看的距离 */
+    private fun focusText(d: Float): String {
+        if (d < 0.02f) return "∞"
+        val m = 1f / d
+        return if (m >= 1f) String.format("%.1fm", m) else String.format("%.0fcm", m * 100)
     }
 
     /** 曝光波轮在 AUTO/S 档调的是 EV，M 档是只读指示器，不接这个回调 */
@@ -705,6 +781,7 @@ class MainActivity : Activity() {
             EV -> evDial
             SHUTTER -> shutterWheel
             ISO -> isoWheel
+            MF -> focusWheel
             else -> null
         }
         if (openWheel != null && !openWheel.isEnabled) closeWheel()
@@ -1089,6 +1166,14 @@ class MainActivity : Activity() {
 
         private val RATIO_NAMES = listOf("3:2", "16:9", "2.35:1")
 
+        /** 对焦模式：AF-S 单次 / AF-C 连续 / MF 手动 */
+        private val FOCUS_MODES = listOf(
+            CameraEngine.Focus.AF_S,
+            CameraEngine.Focus.AF_C,
+            CameraEngine.Focus.MF,
+        )
+        private val FOCUS_NAMES = listOf("AF-S", "AF-C", "MF")
+
 
 
         private const val ZOOM = 0
@@ -1098,6 +1183,7 @@ class MainActivity : Activity() {
         private const val SHUTTER = 2
 
         private const val ISO = 3
+        private const val MF = 4
 
 
 

@@ -48,11 +48,17 @@ class CameraEngine(private val context: Context) {
         val isoMax: Int = 3200,
         val shutterMinNs: Long = 1_000_000_000L / 8000,
         val shutterMaxNs: Long = 1_000_000_000L / 8,
+        /** 最近对焦距离（屈光度），0 = 只能对无穷远 */
+        val focusMaxDiopters: Float = 0f,
     ) {
         val hasZoom: Boolean get() = maxZoom > 1.01f
         val hasEv: Boolean get() = evMax > evMin
         val hasManual: Boolean get() = isoMax > isoMin
+        val hasManualFocus: Boolean get() = focusMaxDiopters > 0.05f
     }
+
+    /** 对焦模式：单次 / 连续 / 手动 */
+    enum class Focus { AF_S, AF_C, MF }
 
     /** 曝光模式：S 快门优先 / AUTO 全自动 / M 全手动 */
     enum class Mode { S, AUTO, M }
@@ -80,6 +86,12 @@ class CameraEngine(private val context: Context) {
 
     /** 当前变焦倍数（1.0 = 不裁） */
     var zoom = 1f
+        private set
+
+    /** 对焦模式与手动焦距（屈光度，0 = 无穷远） */
+    var focusMode = Focus.AF_C
+        private set
+    var focusDiopters = 0f
         private set
 
     /** 当前曝光补偿档位（单位是 evStep） */
@@ -165,6 +177,9 @@ class CameraEngine(private val context: Context) {
         // 曝光补偿：范围以「档」为单位，步长单独给
         val evRange = chars.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_RANGE)
         val evStep = chars.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_STEP)?.toFloat() ?: 0f
+        // 手动对焦：LENS_INFO_MINIMUM_FOCUS_DISTANCE 是最近合焦距离（屈光度），
+        // 0 表示固定焦点镜头（只能对无穷远）
+        val focusMax = chars.get(CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE) ?: 0f
         // 手动曝光用的范围（S 档拨快门、M 档拨 ISO）
         val isoRange = chars.get(CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE)
         val shutterRange = chars.get(CameraCharacteristics.SENSOR_INFO_EXPOSURE_TIME_RANGE)
@@ -177,12 +192,14 @@ class CameraEngine(private val context: Context) {
             isoMax = isoRange?.upper ?: 3200,
             shutterMinNs = shutterRange?.lower ?: (1_000_000_000L / 8000),
             shutterMaxNs = shutterRange?.upper ?: (1_000_000_000L / 8),
+            focusMaxDiopters = focusMax,
         )
         Log.i(
             TAG,
             "控制能力 zoom=${controls.maxZoom} ev=${controls.evMin}..${controls.evMax} " +
                     "iso=${controls.isoMin}..${controls.isoMax} " +
-                    "shutter=${controls.shutterMinNs}..${controls.shutterMaxNs}ns"
+                    "shutter=${controls.shutterMinNs}..${controls.shutterMaxNs}ns " +
+                    "focus=0..${controls.focusMaxDiopters}D"
         )
 
         val previewSize = pickSize(
@@ -306,12 +323,49 @@ class CameraEngine(private val context: Context) {
             addTarget(target)
             // 录制流和预览同一条请求：一次采集喂两个 surface
             recordSurface?.let { addTarget(it) }
-            set(
-                CaptureRequest.CONTROL_AF_MODE,
-                CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE
-            )
+            applyFocus(this)
             applyZoomAndEv(this)
         }.build()
+
+    /** 对焦模式：AF-S 单次、AF-C 连续、MF 手动锁焦 */
+    private fun applyFocus(builder: CaptureRequest.Builder) {
+        when (focusMode) {
+            Focus.AF_S -> {
+                builder.set(
+                    CaptureRequest.CONTROL_AF_MODE,
+                    CaptureRequest.CONTROL_AF_MODE_AUTO
+                )
+            }
+            Focus.AF_C -> {
+                builder.set(
+                    CaptureRequest.CONTROL_AF_MODE,
+                    CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE
+                )
+            }
+            Focus.MF -> {
+                builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF)
+                if (controls.hasManualFocus) {
+                    builder.set(
+                        CaptureRequest.LENS_FOCUS_DISTANCE,
+                        focusDiopters.coerceIn(0f, controls.focusMaxDiopters)
+                    )
+                }
+            }
+        }
+    }
+
+    /** 切对焦模式 */
+    fun setFocusMode(f: Focus) {
+        if (f == focusMode) return
+        focusMode = f
+        reapply()
+    }
+
+    /** 手动对焦：屈光度，0 = 无穷远，越大越近 */
+    fun setFocusDiopters(d: Float) {
+        focusDiopters = d.coerceIn(0f, controls.focusMaxDiopters)
+        if (focusMode == Focus.MF) reapply()
+    }
 
     /** 把变焦 / 曝光（含 S/M 手动档）写进任意请求 */
     private fun applyZoomAndEv(builder: CaptureRequest.Builder) {
@@ -478,10 +532,7 @@ class CameraEngine(private val context: Context) {
         try {
             val req = cam.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).apply {
                 addTarget(readerSurface)
-                set(
-                    CaptureRequest.CONTROL_AF_MODE,
-                    CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE
-                )
+                applyFocus(this)
                 applyZoomAndEv(this)
             }.build()
             s.capture(req, null, handler)

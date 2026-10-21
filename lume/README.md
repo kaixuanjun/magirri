@@ -259,3 +259,17 @@ lume/
 - 照片按同一倍率居中裁切（2× + 3:2 → 927×618），构图和取景器一致。
 - 录像走同一个 `drawFrame`，自动跟着变焦。
 - 代价：预览在高倍率下是放大裁切，会变软；照片仍从全画幅裁，画质不受影响。
+
+## 对焦
+
+模式键下面的 `AF-S / AF-C / MF` 按钮循环切（在测光与画幅之间）：
+
+| 模式 | 相机侧 |
+|---|---|
+| AF-S | `CONTROL_AF_MODE_AUTO` 单次 |
+| AF-C | `CONTROL_AF_MODE_CONTINUOUS_PICTURE` 连续 |
+| MF | `CONTROL_AF_MODE_OFF` + `LENS_FOCUS_DISTANCE` |
+
+MF 档时，**变焦按钮上方**多出「对焦」按钮，点开是同款细长波轮。
+波轮按**屈光度**线性映射（0 = ∞，越大越近），显示成 `∞ / 1.2m / 23cm`。
+最大屈光度取 `LENS_INFO_MINIMUM_FOCUS_DISTANCE`，为 0 的机器（定焦模组）会自动跳过 MF。
