@@ -999,30 +999,37 @@ class MainActivity : Activity() {
 
     // ================= 设置页 =================
 
-    private var settingsOpenedAt = 0L
-
+    /**
+     * 打开菜单。**幂等**：已经在显示就直接返回，不切换。
+     *
+     * 之前这里是 toggle（显示中就关），结果齿轮的一次点击会触发两次 onClick
+     * （performClick 被调了两遍），第二次把刚打开的菜单立刻关掉 —— 表现就是"闪一下"。
+     * 现在打开只管打开，关闭只走右上角返回 / 系统返回键。
+     */
     private fun openSettings() {
-        if (System.currentTimeMillis() - settingsOpenedAt < 350) return
         if (!::settingsPanel.isInitialized) buildSettingsPanel()
-        val showing = settingsPanel.visibility == View.VISIBLE && settingsPanel.alpha > 0.6f
-        if (showing) {
-            settingsPanel.animate().cancel()
-            settingsPanel.animate().alpha(0f).translationY(dp(-10).toFloat())
-                .setDuration(180)
-                .withEndAction {
-                    settingsPanel.visibility = View.GONE
-                    settingsPanel.alpha = 1f
-                    settingsPanel.translationY = 0f
-                }.start()
-            return
-        }
-        settingsOpenedAt = System.currentTimeMillis()
+        if (settingsPanel.visibility == View.VISIBLE && settingsPanel.alpha > 0.6f) return
+
         refreshSettings()
         settingsPanel.animate().cancel()
         settingsPanel.visibility = View.VISIBLE
         settingsPanel.alpha = 0f
         settingsPanel.translationY = dp(12).toFloat()
         settingsPanel.animate().alpha(1f).translationY(0f).setDuration(240).start()
+    }
+
+    /** 关闭菜单 */
+    private fun closeSettings() {
+        if (!::settingsPanel.isInitialized) return
+        if (settingsPanel.visibility != View.VISIBLE) return
+        settingsPanel.animate().cancel()
+        settingsPanel.animate().alpha(0f).translationY(dp(-10).toFloat())
+            .setDuration(180)
+            .withEndAction {
+                settingsPanel.visibility = View.GONE
+                settingsPanel.alpha = 1f
+                settingsPanel.translationY = 0f
+            }.start()
     }
 
     /** 一级菜单切换：右侧内容淡入 */
@@ -1078,7 +1085,7 @@ class MainActivity : Activity() {
             textSize = 13f
             setPadding(dp(16), dp(7), dp(16), dp(7))
             background = pill(0x2EFFFFFF)
-            setOnClickListener { openSettings() }
+            setOnClickListener { closeSettings() }
         })
         page.addView(titleRow, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
