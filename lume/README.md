@@ -524,3 +524,8 @@ Camera2 没有"测光模式"开关，测光范围只有 `CONTROL_AE_REGIONS`：�
 - 预拍位带 900ms 超时兜底，避免某些 HAL 卡在 PRECAPTURE 不动
 
 S 档的软件测光也跟到了手指位置（`preview.setMeterPoint`），不再固定采样中心。
+
+### 水平仪方向取反
+
+`atan2(y, |x|)` 算出来之后取了负：之前往左倾线往右歪（左右镜像）。现在
+`rollDeg = -atan2(y, |x|)`，夹具注入 `y=+1.0` 时线往右上抬，`y=-1.0` 时往右下压。

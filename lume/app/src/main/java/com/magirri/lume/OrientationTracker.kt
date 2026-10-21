@@ -59,7 +59,8 @@ class OrientationTracker(context: Context) : SensorEventListener {
         ).toFloat()
         if (r > 45f) r = 45f
         if (r < -45f) r = -45f
-        rollDeg = r
+        // 取反：之前左右方向是反的（往左倾线往右歪），改成跟随世界水平线
+        rollDeg = -r
 
         if (event.sensor.type != Sensor.TYPE_ACCELEROMETER) return
         val x = event.values[0]
