@@ -733,9 +733,9 @@ class MainActivity : Activity() {
             // 面板宽度随机型密度变化，字号自适应才不会把「快门 1/125」截断。
             // 注意：必须是固定/撑满宽度，WRAP_CONTENT 下自适应没有约束可用，照样会截断。
             setAutoSizeTextTypeUniformWithConfiguration(
-                7, 13, 1, android.util.TypedValue.COMPLEX_UNIT_SP
+                7, 12, 1, android.util.TypedValue.COMPLEX_UNIT_SP
             )
-            setPadding(dp(10), dp(7), dp(10), dp(7))
+            setPadding(dp(8), dp(7), dp(8), dp(7))
             // 按钮自带灰色圆角胶囊；面板底是纯黑，两者区分开
             background = pill(0x2EFFFFFF)
             setOnClickListener { if (isEnabled) toggleWheel(kind) }
@@ -771,13 +771,13 @@ class MainActivity : Activity() {
 
     /** 刷新四个入口按钮上的数值，并标出当前展开的那个 */
     private fun updateWheelButtons() {
-        zoomBtn.text = String.format("变焦 %.1f×", zoomLevel)
+        zoomBtn.text = String.format("%.1f×", zoomLevel)
         evBtn.text = if (camera.mode == CameraEngine.Mode.M) {
-            String.format("曝光 %+.1f", evDial.value * 4f - 2f)
+            String.format("%+.1f", evDial.value * 4f - 2f)
         } else {
             String.format("EV %+.1f", evFromValue(evDial.value))
         }
-        shutterBtn.text = "快门 " + shutterText(camera.manualShutterNs)
+        shutterBtn.text = shutterText(camera.manualShutterNs)
         isoBtn.text = "ISO " + if (camera.mode == CameraEngine.Mode.S) {
             camera.sModeIso
         } else {
@@ -992,8 +992,8 @@ class MainActivity : Activity() {
             text = "返回"
             setTextColor(Color.WHITE)
             textSize = 13f
-            setPadding(dp(14), dp(6), dp(14), dp(6))
-            setBackgroundColor(0x22FFFFFF)
+            setPadding(dp(16), dp(7), dp(16), dp(7))
+            background = pill(0x2EFFFFFF)
             setOnClickListener { openSettings() }
         })
         page.addView(titleRow, LinearLayout.LayoutParams(

@@ -50,10 +50,16 @@ class OrientationTracker(context: Context) : SensorEventListener {
 
     override fun onSensorChanged(event: SensorEvent) {
 
-        // 横屏下 y 轴近似重力方向，x/z 决定俯仰与横滚；这里只取横滚
-        val ay = event.values[1]
-        val az = event.values[2]
-        rollDeg = Math.toDegrees(Math.atan2(az.toDouble(), ay.toDouble())).toFloat()
+        // 横屏拍摄时手机是立着的：x 轴（长边）水平、y 轴（短边）竖直，
+        // 绕着镜头光轴（z）的横滚才是画面歪没歪。
+        // 之前用 atan2(z, y) 是"屏幕朝下才平"，那是俯仰，不是横滚。
+        var r = Math.toDegrees(
+            Math.atan2(event.values[0].toDouble(), -event.values[1].toDouble())
+        ).toFloat()
+        // 两种横握方向都归一化到 ±90 内
+        if (r > 90f) r -= 180f
+        if (r < -90f) r += 180f
+        rollDeg = r
 
         if (event.sensor.type != Sensor.TYPE_ACCELEROMETER) return
         val x = event.values[0]
