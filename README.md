@@ -46,11 +46,3 @@ cd vex/android && ./gradlew assembleDebug    # 或 lume/
 
 > 注意：工程路径里有中文时 Gradle 单测会挂，构建建议放到纯 ASCII 路径下
 > （例如先 `robocopy` 到 `C:\Android\vex` 再 build）。
-
-## 品牌
-
-- **MAGIRRI**：母品牌
-- **Vex**：把 Log 素材"捞回来"（vex 有"使困扰、折腾"的意思，对应 Log 素材的麻烦）
-- **Lume**：相机（lume 是"光"的词根）
-
-更名前的内部代号：Vex 曾叫 `magicrri` / `Magirri`，Lume 曾叫 `ArcCam` / `arcam`。
