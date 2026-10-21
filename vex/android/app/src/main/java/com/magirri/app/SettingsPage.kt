@@ -118,10 +118,10 @@ class SettingsPage(
         about.addView(
             Ui.caption(
                 ctx, p,
-                "色彩链：Magic-Log → 荣耀官方还原 LUT → Rec.709 → LogC3(EI800) → ARRI LogC3→709 → 仿阿莱成品影调\n" +
+                "色彩链：Magic-Log → 还原 LUT → Rec.709 → LogC3(EI800) → LogC3→709 → 成品影调\n" +
                 "成品影调是固定的五条常数，烘进 LUT，所以同素材每次导出都一样、不随素材漂。\n" +
                 "整条链在桌面端烘成 33³ LUT 打进 App，手机只做一次查表。\n" +
-                "LUT 来自荣耀与 ARRI 官方发布，仅限本机使用。"
+                "影调曲线为自制，仅限本机使用。"
             ).apply { setPadding(0, dp(ctx, 8f), 0, 0) }
         )
         add(about, 14f)

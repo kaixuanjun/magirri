@@ -25,7 +25,7 @@ import android.widget.Toast
 import java.util.concurrent.Executors
 
 /**
- * MAGIRRI Lume：独立相机，直出 ARRI 色彩。
+ * MAGIRRI Lume：独立相机，直出电影感影调。影调曲线为自制，与任何厂商无关联。
  *
  * 预览走 GL 实时查表；拍照走 YUV → CPU 查同一张 LUT → JPEG。
  * LUT 是 Magri 那条链把「荣耀还原」换成恒等后烘出来的，所以色彩响应和 Magri 一致。
@@ -155,7 +155,7 @@ class MainActivity : Activity() {
         window.addFlags(android.view.WindowManager.LayoutParams.FLAG_FULLSCREEN)
         @Suppress("DEPRECATION")
         window.decorView.systemUiVisibility = immersiveFlags()
-        lut = Lut3D.parse(assets.open("luts/arri_cam_standard.cube").bufferedReader().use { it.readText() })
+        lut = Lut3D.parse(assets.open("luts/filmic_standard.cube").bufferedReader().use { it.readText() })
         camera = CameraEngine(this)
         recorder = VideoRecorder(this)
         // 先按系统显示方向初始化，传感器第一个事件到来后再校正——避免旋转重建后闪一下
@@ -310,8 +310,7 @@ class MainActivity : Activity() {
         }
         camera.onError = { msg ->
             ui.post {
-                status.text = msg
-                status.visibility = View.VISIBLE
+                showStatus(msg)
             }
         }
         previewBox.addView(preview)
@@ -337,7 +336,7 @@ class MainActivity : Activity() {
         )
 
         status = TextView(this).apply {
-            text = "ARRI 直出 · 就绪"
+            text = ""
             setTextColor(0xCCFFFFFF.toInt())
             textSize = 12f
             setPadding(dp(14), dp(8), dp(14), dp(8))
@@ -377,7 +376,7 @@ class MainActivity : Activity() {
                         showFocusRing(e.x, e.y)
                         v.performClick()
                     } else if (uv == null) {
-                        status.text = "取景器还没就绪"
+                        showStatus("取景器还没就绪")
                     }
                 }
                 android.view.MotionEvent.ACTION_DOWN -> v.performClick()
@@ -496,14 +495,14 @@ class MainActivity : Activity() {
             orientation = LinearLayout.HORIZONTAL
         }
 
-        shutter = View(this).apply {
+        shutter = pressable(View(this).apply {
             background = GradientDrawable().apply {
                 shape = GradientDrawable.OVAL
                 setColor(Color.WHITE)
                 setStroke(dp(3), 0x66FFFFFF)
             }
             setOnClickListener { takePhoto() }
-        }
+        })
         // 右栏：最上面一行是 [齿轮 + 快门]（齿轮顶边与快门顶边对齐，位于快门左侧），
         // 下面依次是录像、模式、测光、对焦、镜头
         val camCol = LinearLayout(this).apply {
@@ -520,14 +519,14 @@ class MainActivity : Activity() {
             setOnClickListener { takePhoto() }
         }
 
-        settingsBtn = TextView(this).apply {
+        settingsBtn = pressable(TextView(this).apply {
             text = "⚙"
             setTextColor(Color.WHITE)
             textSize = 17f
             gravity = Gravity.CENTER
             background = pill(0x33FFFFFF)
             setOnClickListener { openSettings() }
-        }
+        })
 
         val shutterRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -550,16 +549,16 @@ class MainActivity : Activity() {
             ).apply { bottomMargin = dp(10) }
         )
 
-        recordBtn = View(this).apply {
+        recordBtn = pressable(View(this).apply {
             background = recordIcon(false)
             setOnClickListener { toggleRecording() }
-        }
+        })
         camCol.addView(
             recordBtn,
             LinearLayout.LayoutParams(BUTTON_SIZE, BUTTON_SIZE).apply { bottomMargin = dp(12) }
         )
 
-        modeBtn = TextView(this).apply {
+        modeBtn = pressable(TextView(this).apply {
             text = "AUTO"
             setTextColor(Color.WHITE)
             gravity = Gravity.CENTER
@@ -568,14 +567,14 @@ class MainActivity : Activity() {
             )
             background = pill(0x33FFFFFF)
             setOnClickListener { cycleMode() }
-        }
+        })
         camCol.addView(
             modeBtn,
             LinearLayout.LayoutParams(dp(66), dp(36))
         )
 
-        // 测光模式：对应 ARRI 曝光表的测光区域（点测 / 中央重点 / 多区）
-        meterBtn = TextView(this).apply {
+        // 测光模式：参照电影机曝光表的测光区域思路（点测 / 中央重点 / 多区）
+        meterBtn = pressable(TextView(this).apply {
             text = METER_NAMES[1]
             setTextColor(Color.WHITE)
             setAutoSizeTextTypeUniformWithConfiguration(
@@ -589,14 +588,14 @@ class MainActivity : Activity() {
                 preview.meterMode = meterMode
                 meterBtn.text = METER_NAMES[meterMode]
             }
-        }
+        })
         camCol.addView(
             meterBtn,
             LinearLayout.LayoutParams(dp(66), dp(36)).apply { topMargin = dp(6) }
         )
 
         // 对焦模式：AF-S / AF-C / MF
-        focusBtn = TextView(this).apply {
+        focusBtn = pressable(TextView(this).apply {
             text = FOCUS_NAMES[focusIndex]
             setTextColor(Color.WHITE)
             setAutoSizeTextTypeUniformWithConfiguration(
@@ -609,14 +608,14 @@ class MainActivity : Activity() {
                 focusIndex = (focusIndex + 1) % FOCUS_MODES.size
                 applyFocusMode()
             }
-        }
+        })
         camCol.addView(
             focusBtn,
             LinearLayout.LayoutParams(dp(66), dp(36)).apply { topMargin = dp(6) }
         )
 
         // 换镜头：只有多摄机型才出现
-        lensBtn = TextView(this).apply {
+        lensBtn = pressable(TextView(this).apply {
             text = "镜头"
             setTextColor(Color.WHITE)
             textSize = 12f
@@ -630,7 +629,7 @@ class MainActivity : Activity() {
                 camera.switchToLens(lensIndexNow)
                 updateLensButton()
             }
-        }
+        })
         camCol.addView(
             lensBtn,
             LinearLayout.LayoutParams(dp(66), dp(36)).apply { topMargin = dp(6) }
@@ -739,7 +738,7 @@ class MainActivity : Activity() {
             // 按钮自带灰色圆角胶囊；面板底是纯黑，两者区分开
             background = pill(0x2EFFFFFF)
             setOnClickListener { if (isEnabled) toggleWheel(kind) }
-        }
+        }.let { pressable(it) }
 
     private fun toggleWheel(kind: Int) {
         if (openWheelKind == kind) {
@@ -887,6 +886,37 @@ class MainActivity : Activity() {
             }
         }
         ui.postDelayed(tick, 0)
+    }
+
+
+    /** 按钮按压过渡：按下轻微缩小，抬起回弹 */
+    private fun <T : View> pressable(v: T, scale: Float = 0.94f): T {
+        v.setOnTouchListener { view, e ->
+            when (e.actionMasked) {
+                android.view.MotionEvent.ACTION_DOWN ->
+                    view.animate().scaleX(scale).scaleY(scale).setDuration(70).start()
+                android.view.MotionEvent.ACTION_UP,
+                android.view.MotionEvent.ACTION_CANCEL ->
+                    view.animate().scaleX(1f).scaleY(1f).setDuration(140).start()
+            }
+            false          // 不吃事件，点击照常触发
+        }
+        return v
+    }
+
+    /** 提示消息：写一行，2.5 秒后自动消失（常驻信息不再占屏） */
+    private fun showStatus(msg: String) {
+        status.text = msg
+        status.animate().alpha(1f).setDuration(120).start()
+        ui.removeCallbacks(statusClear)
+        ui.postDelayed(statusClear, 2500)
+    }
+
+    private val statusClear = Runnable {
+        status.animate().alpha(0f).setDuration(200).withEndAction {
+            status.text = ""
+            status.alpha = 1f
+        }.start()
     }
 
     /** 自绘状态条：时间 + 电量，20 秒刷一次 */
@@ -1526,7 +1556,7 @@ class MainActivity : Activity() {
                 applyFrameRatio()
                 applyRotation()
                 ui.post {
-                    status.text = "ARRI 直出 · ${cfg.stillSize.width}×${cfg.stillSize.height}"
+                    status.text = ""
                 }
             }
         }
@@ -1649,7 +1679,7 @@ class MainActivity : Activity() {
     private fun startRecording() {
         val p = previewSize
         if (p == null) {
-            status.text = "相机还没就绪"
+            showStatus("相机还没就绪")
             return
         }
         // 编码尺寸：有独立 4K 录制流就用它（横竖跟着握持方向转），否则退回预览流并压到 720 短边
@@ -1686,7 +1716,7 @@ class MainActivity : Activity() {
 
         val surface = recorder.start(w, h, FPS_VALUES[fpsIndex])
         if (surface == null) {
-            status.text = "录像启动失败（编码器不可用）"
+            showStatus("录像启动失败（编码器不可用）")
             return
         }
         preview.setEncoderTarget(surface, w, h, rot)
@@ -1696,6 +1726,8 @@ class MainActivity : Activity() {
         // 录制中不能改画幅：编码尺寸已经定死了，改了会写出尺寸不一致的流
         ratioBtn.isEnabled = false
         ratioBtn.alpha = 0.3f
+        ui.removeCallbacks(statusClear)
+        status.alpha = 1f
         status.text = "● 录制中 00:00"
         ui.post(ticker)
         // 编码器的 EGL 表面是在 GL 线程上建的，几百毫秒后才知道成没成；
@@ -1704,7 +1736,7 @@ class MainActivity : Activity() {
             val err = preview.lastEglError
             if (recording && err != null) {
                 stopRecording()
-                status.text = "录像不可用：$err"
+                showStatus("录像不可用：$err")
             }
         }, 700)
     }
@@ -1749,18 +1781,14 @@ class MainActivity : Activity() {
                 val ms = System.currentTimeMillis() - t0
                 ui.post {
                     busy = false
-                    status.text = if (uri != null) {
-                        "已保存 ${rw}×${rh} · ${ms}ms"
-                    } else {
-                        "保存失败"
-                    }
+                    showStatus(if (uri != null) "已保存 ${rw}×${rh} · ${ms}ms" else "保存失败")
                 }
             } catch (t: Throwable) {
                 runCatching { image.close() }
                 Log.w(TAG, "处理失败: ${t.message}")
                 ui.post {
                     busy = false
-                    status.text = "处理失败: ${t.message}"
+                    showStatus("处理失败: ${t.message}")
                     Toast.makeText(this, "处理失败", Toast.LENGTH_SHORT).show()
                 }
             }
@@ -1777,7 +1805,7 @@ class MainActivity : Activity() {
             if (grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) {
                 startCamera()
             } else {
-                status.text = "没有相机权限"
+                showStatus("没有相机权限")
             }
         }
     }
@@ -1821,7 +1849,7 @@ class MainActivity : Activity() {
 
 
 
-        /** ARRI 曝光表的测光区域：Spot / Center / Multi */
+        /** 测光区域：Spot / Center / Multi */
 
         private val METER_NAMES = listOf("点测", "中央", "多区")
 

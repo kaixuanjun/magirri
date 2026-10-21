@@ -317,7 +317,7 @@ class VideoRecorder(private val context: Context) {
     }
 
     private fun publish(file: File): Uri? {
-        val name = "ARRI_${SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())}.mp4"
+        val name = "LUME_${SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())}.mp4"
         val resolver = context.contentResolver
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             val values = ContentValues().apply {

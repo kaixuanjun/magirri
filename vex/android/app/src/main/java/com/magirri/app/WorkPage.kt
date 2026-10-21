@@ -43,7 +43,7 @@ class WorkPage(ctx: Context, p: Palette, private val cb: Callbacks) : Page(ctx, 
     init {
         add(Ui.title(ctx, p, "调色"))
         add(
-            Ui.body(ctx, p, "选一段手机拍的 Log 视频，套上荣耀还原 + ARRI 色彩（影调已烘焙，不用手调）").apply {
+            Ui.body(ctx, p, "选一段手机拍的 Log 视频，套上还原 + 影片影调（已烘焙，不用手调）").apply {
                 setPadding(0, dp(ctx, 6f), 0, 0)
             }
         )
@@ -84,7 +84,7 @@ class WorkPage(ctx: Context, p: Palette, private val cb: Callbacks) : Page(ctx, 
         // ---- ② 色彩 ----
         val look = Ui.card(ctx, p)
         look.addView(label(ctx, "②", "色彩风格"))
-        lookSegment = Segment(ctx, p, listOf("ARRI 标准", "ARRI Classic"), 0) { refresh() }
+        lookSegment = Segment(ctx, p, listOf("标准", "Classic"), 0) { refresh() }
         look.addView(
             lookSegment,
             LinearLayout.LayoutParams(

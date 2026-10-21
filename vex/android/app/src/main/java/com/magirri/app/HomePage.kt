@@ -33,14 +33,14 @@ class HomePage(ctx: Context, p: Palette, private val onStart: () -> Unit) : Page
         hero.addView(
             Ui.text(
                 ctx,
-                "把手机拍的 Log 视频，一键变成 ARRI 电影色彩",
+                "把手机拍的 Log 视频，一键变成电影感影调",
                 14f, 0xF0FFFFFF.toInt()
             ).apply { setPadding(0, dp(ctx, 8f), 0, 0) }
         )
         hero.addView(
             Ui.text(
                 ctx,
-                "荣耀还原 + ARRI 色彩 + 成品影调，全部烘进 LUT · 全程本机",
+                "还原 + 影片影调，全部烘进 LUT · 全程本机",
                 12f, 0xCCFFFFFF.toInt()
             ).apply { setPadding(0, dp(ctx, 14f), 0, 0) }
         )
@@ -55,7 +55,7 @@ class HomePage(ctx: Context, p: Palette, private val onStart: () -> Unit) : Page
             }
         )
         steps.addView(step(ctx, "1", "选一段 Log 视频", "手机上用原生相机录的 Magic-Log 片段"))
-        steps.addView(step(ctx, "2", "挑一个色彩", "ARRI 标准 / ARRI Classic，影调已调好"))
+        steps.addView(step(ctx, "2", "挑一个色彩", "标准 / Classic 两种影调，已调好"))
         steps.addView(step(ctx, "3", "导出", "成片默认存到 相册/Magirri"))
         add(steps, 16f)
 

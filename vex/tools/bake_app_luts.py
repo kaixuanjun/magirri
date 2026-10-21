@@ -46,7 +46,7 @@ def main(argv=None) -> int:
             size=args.size,
         )
         path = os.path.join(OUT_DIR, name)
-        lut = bake.bake_chain(cfg, title=f"{log_key} -> LogC3 -> ARRI {look_key}")
+        lut = bake.bake_chain(cfg, title=f"{log_key} -> LogC3 -> {look_key}")
         cube.write_cube(lut, path, title=lut.title)
         mb = os.path.getsize(path) / 1e6
         print(f"  {name:<28} {args.size}³  {mb:.2f} MB")

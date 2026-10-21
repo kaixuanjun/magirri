@@ -148,7 +148,7 @@ object PhotoProcessor {
     fun saveJpeg(context: Context, argb: IntArray, w: Int, h: Int, quality: Int = 95): Uri? {
         val bitmap = Bitmap.createBitmap(argb, w, h, Bitmap.Config.ARGB_8888)
         val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
-        val name = "ARRI_$stamp.jpg"
+        val name = "LUME_$stamp.jpg"
         val resolver = context.contentResolver
 
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {

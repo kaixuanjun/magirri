@@ -52,9 +52,9 @@ def main() -> int:
         look_toe=args.toe,
         look_lift=args.lift,
     )
-    name = args.out or f"arri_cam_{args.look}.cube"
+    name = args.out or f"filmic_{args.look}.cube"
     OUT_DIR.mkdir(parents=True, exist_ok=True)
-    bake.write_baked(cfg, str(OUT_DIR / name), title=f"ArcCam ARRI look ({args.look})")
+    bake.write_baked(cfg, str(OUT_DIR / name), title=f"MAGIRRI Lume filmic look ({args.look})")
 
     # 自检：灰轴 + 暗部分层 + 几个饱和色
     lut = cube.read_cube(str(OUT_DIR / name))

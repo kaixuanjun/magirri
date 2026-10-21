@@ -544,7 +544,7 @@ class GlPreview(
         lumaWanted = true
     }
 
-    /** 测光模式：0 = 点测，1 = 中央重点，2 = 多区（对应 ARRI 曝光表的 Metring 区域） */
+    /** 测光模式：0 = 点测，1 = 中央重点，2 = 多区（参照电影机曝光表的测光区域） */
     @Volatile var meterMode = 1
 
     /** 测光用的小 FBO：把整幅画面渲到 64x48，再按区域加权重算亮度 */
@@ -609,7 +609,7 @@ class GlPreview(
         val cx = MW / 2f
         val cy = MH / 2f
         return when (meterMode) {
-            // 点测：只取中间一小块（约画幅宽度的 6%），跟 ARRI 的 Spot 一个意思
+            // 点测：只取中间一小块（约画幅宽度的 6%），就是点测的含义
             0 -> {
                 var sum = 0f
                 var n = 0
