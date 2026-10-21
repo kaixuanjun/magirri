@@ -1,0 +1,1035 @@
+﻿package com.magirri.lume
+
+import android.Manifest
+import android.app.Activity
+import android.content.pm.PackageManager
+import android.graphics.Color
+import android.graphics.drawable.GradientDrawable
+import android.media.Image
+import android.os.Build
+import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.util.Log
+import android.view.Gravity
+import android.view.View
+import android.view.ViewGroup
+import android.widget.FrameLayout
+import android.widget.LinearLayout
+import android.widget.TextView
+import android.widget.Toast
+import java.util.concurrent.Executors
+
+/**
+ * ArcCam：独立相机，直出 ARRI 色彩。
+ *
+ * 预览走 GL 实时查表；拍照走 YUV → CPU 查同一张 LUT → JPEG。
+ * LUT 是 Magri 那条链把「荣耀还原」换成恒等后烘出来的，所以色彩响应和 Magri 一致。
+ */
+class MainActivity : Activity() {
+
+    private lateinit var preview: GlPreview
+    private lateinit var camera: CameraEngine
+    private lateinit var lut: Lut3D
+    private lateinit var shutter: View
+    private lateinit var toggle: TextView
+    private lateinit var status: TextView
+    private lateinit var perf: TextView
+    private lateinit var recordBtn: View
+    private lateinit var zoomDial: WheelView
+    private lateinit var evDial: WheelView
+    private lateinit var modeBtn: TextView
+
+    private lateinit var meterBtn: TextView
+
+    private lateinit var ratioBtn: TextView
+
+    /** 当前画幅索引：0=3:2, 1=16:9, 2=2.35:1 */
+
+    private var ratioIndex = 0
+
+    /** 0 点测 / 1 中央重点 / 2 多区 */
+    private var meterMode = 1
+
+    /** S 档上一次的 EV，用来算增量补偿 */
+    private var lastEv = 0f
+
+    private lateinit var zoomBtn: TextView
+
+    private lateinit var evBtn: TextView
+
+    private lateinit var shutterBtn: TextView
+
+    private lateinit var isoBtn: TextView
+
+
+
+    private lateinit var wheels: List<WheelView>
+
+    private lateinit var wheelStrip: LinearLayout
+
+    private var openWheelKind = -1
+
+    private lateinit var shutterWheel: WheelView
+
+    private lateinit var isoWheel: WheelView
+
+    private lateinit var smallWheelRow: LinearLayout
+
+    private val ui = Handler(Looper.getMainLooper())
+    private val work = Executors.newSingleThreadExecutor()
+    private var busy = false
+    private var sensorOrientation = 90
+    /** 设备握持方向（加速度计），0/90/180/270 */
+    private var deviceDeg = 0
+    private lateinit var orientation: OrientationTracker
+    private lateinit var recorder: VideoRecorder
+    private var recording = false
+    private var recordStart = 0L
+    private var previewSize: android.util.Size? = null
+
+    /** 4K 录制流尺寸；null 表示这台机器没有独立录制流 */
+
+    private var recordSize: android.util.Size? = null
+    private var strength = 1f
+
+    /** 录制时长走秒表 */
+    /** 每秒刷一次性能读数，卡顿时看它就够了 */
+    private val perfTicker = object : Runnable {
+        override fun run() {
+            val (fps, drawMs, encMs) = preview.takeStats()
+            perf.text = if (recording) {
+                "FPS %d · GL %.1fms · ENC %.1fms".format(fps, drawMs, encMs)
+            } else {
+                "FPS %d · GL %.1fms".format(fps, drawMs)
+            }
+            ui.postDelayed(this, 1000)
+        }
+    }
+
+    private val ticker = object : Runnable {
+        override fun run() {
+            if (!recording) return
+            val s = (android.os.SystemClock.elapsedRealtime() - recordStart) / 1000
+            status.text = "● 录制中 %02d:%02d".format(s / 60, s % 60)
+            ui.postDelayed(this, 500)
+        }
+    }
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        lut = Lut3D.parse(assets.open("luts/arri_cam_standard.cube").bufferedReader().use { it.readText() })
+        camera = CameraEngine(this)
+        recorder = VideoRecorder(this)
+        // 先按系统显示方向初始化，传感器第一个事件到来后再校正——避免旋转重建后闪一下
+        deviceDeg = when (display?.rotation ?: android.view.Surface.ROTATION_0) {
+            android.view.Surface.ROTATION_90 -> 90
+            android.view.Surface.ROTATION_180 -> 180
+            android.view.Surface.ROTATION_270 -> 270
+            else -> 0
+        }
+        orientation = OrientationTracker(this).apply {
+            onChanged = { deg ->
+                deviceDeg = deg
+                applyRotation()
+            }
+        }
+        buildUi()
+        ui.postDelayed(perfTicker, 1500)
+
+        ui.post(exposureLoop)
+
+        if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(
+                arrayOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO), REQ_CAMERA
+            )
+        } else {
+            startCamera()
+        }
+    }
+
+    // ---------- 拨盘取值映射 ----------
+
+    /** 0..1 → 1..maxZoom，取对数：低倍率段手感更细 */
+    private fun zoomFromValue(v: Float): Float {
+        val max = camera.controls.maxZoom.coerceAtLeast(1f)
+        return Math.pow(max.toDouble(), v.toDouble()).toFloat().coerceIn(1f, max)
+    }
+
+    /** 0..1 → 曝光补偿档位 index */
+    private fun evIndexFromValue(v: Float): Int {
+        val c = camera.controls
+        if (!c.hasEv) return 0
+        return Math.round(c.evMin + v * (c.evMax - c.evMin)).toInt().coerceIn(c.evMin, c.evMax)
+    }
+
+    private fun evFromValue(v: Float): Float {
+        val c = camera.controls
+        return evIndexFromValue(v) * (if (c.evStep > 0f) c.evStep else 0f)
+    }
+
+    /** 手持能用的快门范围：1/15s ~ 1/2000s，和机身范围取交集 */
+    private fun shutterSlowestNs(): Long =
+        maxOf(camera.controls.shutterMinNs, 1_000_000_000L / 15)
+
+    private fun shutterFastestNs(): Long =
+        minOf(camera.controls.shutterMaxNs, 1_000_000_000L / 2000)
+
+    /** 0..1 → 快门（对数刻度，右边越快） */
+    private fun shutterNsFromValue(v: Float): Long {
+        val fast = shutterFastestNs().toDouble()
+        val slow = shutterSlowestNs().toDouble()
+        return (slow * Math.pow(fast / slow, v.toDouble())).toLong()
+    }
+
+    private fun shutterValueFromNs(ns: Long): Float {
+        val fast = shutterFastestNs().toDouble()
+        val slow = shutterSlowestNs().toDouble()
+        if (ns <= 0) return 0f
+        val v = Math.log(ns / slow) / Math.log(fast / slow)
+        return v.toFloat().coerceIn(0f, 1f)
+    }
+
+    /** 0..1 → ISO（对数刻度） */
+    private fun isoFromValue(v: Float): Int {
+        val c = camera.controls
+        val lo = c.isoMin.toDouble().coerceAtLeast(1.0)
+        val hi = c.isoMax.toDouble().coerceAtLeast(lo + 1)
+        return (lo * Math.pow(hi / lo, v.toDouble())).toInt().coerceIn(c.isoMin, c.isoMax)
+    }
+
+    private fun isoValueFromIso(iso: Int): Float {
+        val c = camera.controls
+        val lo = c.isoMin.toDouble().coerceAtLeast(1.0)
+        val hi = c.isoMax.toDouble().coerceAtLeast(lo + 1)
+        if (iso <= 0) return 0f
+        return (Math.log(iso / lo) / Math.log(hi / lo)).toFloat().coerceIn(0f, 1f)
+    }
+
+    /** 快门显示成 1/125、1/60 这种 */
+    private fun shutterText(ns: Long): String {
+        if (ns <= 0) return "--"
+        return if (ns >= 1_000_000_000L) {
+            String.format("%.0fs", ns / 1_000_000_000.0)
+        } else {
+            "1/" + Math.round(1_000_000_000.0 / ns)
+        }
+    }
+
+    private fun buildUi() {
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setBackgroundColor(Color.BLACK)
+        }
+
+        // ---------- 左：取景 ----------
+        val previewBox = FrameLayout(this).apply { setBackgroundColor(Color.BLACK) }
+        preview = GlPreview(this, lut).apply {
+            layoutParams = FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT
+            )
+        }
+        camera.onPreviewSize = { size ->
+            preview.cameraAspect = size.width.toFloat() / size.height
+        }
+        camera.onError = { msg ->
+            ui.post {
+                status.text = msg
+                status.visibility = View.VISIBLE
+            }
+        }
+        previewBox.addView(preview)
+
+        status = TextView(this).apply {
+            text = "ARRI 直出 · 就绪"
+            setTextColor(0xCCFFFFFF.toInt())
+            textSize = 12f
+            setPadding(dp(14), dp(8), dp(14), dp(8))
+        }
+        previewBox.addView(
+            status,
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                gravity = Gravity.TOP or Gravity.START
+                topMargin = dp(12)
+                leftMargin = dp(10)
+            }
+        )
+
+        perf = TextView(this).apply {
+            text = "FPS --"
+            setTextColor(0x99FFFFFF.toInt())
+            textSize = 11f
+            setPadding(dp(14), dp(6), dp(14), dp(6))
+        }
+        previewBox.addView(
+            perf,
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                gravity = Gravity.BOTTOM or Gravity.START
+                bottomMargin = dp(10)
+                leftMargin = dp(8)
+            }
+        )
+
+        root.addView(
+            previewBox,
+            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 2.2f)
+        )
+
+        // ---------- 右：面板（左边一条细长波轮位，右边一列按钮） ----------
+        val panel = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(dp(8), dp(10), dp(10), dp(10))
+            // 面板底是纯黑：按钮各自带灰色胶囊，底上不再画任何灰块
+            setBackgroundColor(Color.BLACK)
+        }
+
+        // 波轮位：平时宽度为 0，点按钮才展开（就地展开，不遮画面）
+        wheelStrip = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+        }
+        zoomDial = WheelView(this, "变焦").apply {
+            format = { v -> String.format("%.1f×", zoomFromValue(v)) }
+            onChange = { v ->
+                camera.setZoom(zoomFromValue(v))
+                updateWheelButtons()
+            }
+        }
+        evDial = WheelView(this, "EV").apply {
+            format = { v -> String.format("%+.1f", evFromValue(v)) }
+            onChange = { v ->
+                if (camera.mode == CameraEngine.Mode.S) {
+                    // 同上：EV 每变一档，ISO 立刻 ×2 —— 亮度变化要跟手，不要匀速爬
+                    val ev = evFromValue(v)
+                    val d = Math.pow(2.0, (ev - lastEv).toDouble())
+                    if (d.isFinite() && d > 0) {
+                        camera.setSModeIso((camera.sModeIso * d).toInt())
+                    }
+                    lastEv = ev
+                }
+                onExposureDial(v)
+                updateWheelButtons()
+            }
+        }
+        shutterWheel = WheelView(this, "快门").apply {
+            format = { v -> shutterText(shutterNsFromValue(v)) }
+            onChange = { v ->
+                val newNs = shutterNsFromValue(v)
+                val oldNs = camera.manualShutterNs
+                if (camera.mode == CameraEngine.Mode.S && oldNs > 0 && newNs > 0) {
+                    // S 档：曝光 ∝ ISO × 快门，所以快门变多少、ISO 就反比补多少。
+                    // 这样是**瞬间守恒**，不用等测光闭环一档一档爬——之前画面亮度要慢慢挪，
+                    // 看着就是卡。
+                    val iso = (camera.sModeIso * (oldNs.toDouble() / newNs)).toInt()
+                    camera.setSModeIso(iso)
+                }
+                camera.setShutterNs(newNs)
+                updateWheelButtons()
+            }
+        }
+        isoWheel = WheelView(this, "ISO").apply {
+            format = { v -> isoFromValue(v).toString() }
+            onChange = { v ->
+                camera.setIso(isoFromValue(v))
+                updateWheelButtons()
+            }
+        }
+        wheels = listOf(zoomDial, evDial, shutterWheel, isoWheel)
+        wheels.forEach { w ->
+            w.visibility = View.GONE
+            wheelStrip.addView(
+                w,
+                LinearLayout.LayoutParams(dp(58), ViewGroup.LayoutParams.MATCH_PARENT)
+                    .apply { marginEnd = dp(6) }
+            )
+        }
+        panel.addView(
+            wheelStrip,
+            LinearLayout.LayoutParams(dp(64), ViewGroup.LayoutParams.MATCH_PARENT)
+        )
+
+        // 横向两栏：左边数值按钮，右边快门/录像/模式键
+        val rightCol = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+        }
+
+        shutter = View(this).apply {
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(Color.WHITE)
+                setStroke(dp(3), 0x66FFFFFF)
+            }
+            setOnClickListener { takePhoto() }
+        }
+        // 右栏：快门 → 录像 → 模式键，都贴右上角
+        val camCol = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.END
+        }
+
+        shutter = View(this).apply {
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(Color.WHITE)
+                setStroke(dp(3), 0x66FFFFFF)
+            }
+            setOnClickListener { takePhoto() }
+        }
+        camCol.addView(
+            shutter,
+            LinearLayout.LayoutParams(BUTTON_SIZE, BUTTON_SIZE).apply { bottomMargin = dp(10) }
+        )
+
+        recordBtn = View(this).apply {
+            background = recordIcon(false)
+            setOnClickListener { toggleRecording() }
+        }
+        camCol.addView(
+            recordBtn,
+            LinearLayout.LayoutParams(BUTTON_SIZE, BUTTON_SIZE).apply { bottomMargin = dp(12) }
+        )
+
+        modeBtn = TextView(this).apply {
+            text = "AUTO"
+            setTextColor(Color.WHITE)
+            textSize = 13f
+            gravity = Gravity.CENTER
+            setPadding(dp(14), dp(8), dp(14), dp(8))
+            background = pill(0x33FFFFFF)
+            setOnClickListener { cycleMode() }
+        }
+        camCol.addView(
+            modeBtn,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+        )
+
+        // 测光模式：对应 ARRI 曝光表的测光区域（点测 / 中央重点 / 多区）
+        meterBtn = TextView(this).apply {
+            text = METER_NAMES[1]
+            setTextColor(Color.WHITE)
+            textSize = 12f
+            gravity = Gravity.CENTER
+            setPadding(dp(14), dp(8), dp(14), dp(8))
+            background = pill(0x33FFFFFF)
+            setOnClickListener {
+                meterMode = (meterMode + 1) % METER_NAMES.size
+                preview.meterMode = meterMode
+                meterBtn.text = METER_NAMES[meterMode]
+            }
+        }
+        camCol.addView(
+            meterBtn,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { topMargin = dp(10) }
+        )
+
+        // 画幅：3:2 / 16:9 / 2.35:1，循环切换
+        ratioBtn = TextView(this).apply {
+            text = RATIO_NAMES[ratioIndex]
+            setTextColor(Color.WHITE)
+            textSize = 12f
+            gravity = Gravity.CENTER
+            setPadding(dp(14), dp(8), dp(14), dp(8))
+            background = pill(0x33FFFFFF)
+            setOnClickListener {
+                ratioIndex = (ratioIndex + 1) % RATIOS.size
+                ratioBtn.text = RATIO_NAMES[ratioIndex]
+                applyFrameRatio()
+            }
+        }
+        camCol.addView(
+            ratioBtn,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { topMargin = dp(10) }
+        )
+
+        // 左栏：四个数值按钮，排在快门/录像左侧，竖向排列不超出屏幕
+        val valueCol = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.START
+        }
+        zoomBtn = wheelButton("变焦", "1.0×", ZOOM)
+        evBtn = wheelButton("EV", "+0.0", EV)
+        shutterBtn = wheelButton("快门", "1/125", SHUTTER)
+        isoBtn = wheelButton("ISO", "400", ISO)
+        for (b in listOf(zoomBtn, evBtn, shutterBtn, isoBtn)) {
+            valueCol.addView(
+                b,
+                LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
+                ).apply { topMargin = dp(10) }
+            )
+        }
+
+        rightCol.addView(
+            valueCol,
+            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                .apply { gravity = Gravity.CENTER_VERTICAL }
+        )
+        rightCol.addView(
+            camCol,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT
+            ).apply { gravity = Gravity.TOP }
+        )
+
+        panel.addView(
+            rightCol,
+            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f)
+        )
+
+        root.addView(panel, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
+
+        applyMode(CameraEngine.Mode.AUTO, force = true)
+        setContentView(root)
+    }
+
+    /** 一个「数值按钮」：点开对应波轮（再点一次收起） */
+    private fun wheelButton(title: String, value: String, kind: Int): TextView =
+        TextView(this).apply {
+            text = "$title $value"
+            setTextColor(Color.WHITE)
+            textSize = 12f
+            gravity = Gravity.CENTER
+            setPadding(dp(14), dp(7), dp(14), dp(7))
+            // 按钮自带灰色圆角胶囊；面板底是纯黑，两者区分开
+            background = pill(0x2EFFFFFF)
+            setOnClickListener { if (isEnabled) toggleWheel(kind) }
+        }
+
+    private fun toggleWheel(kind: Int) {
+        if (openWheelKind == kind) {
+            closeWheel()
+            return
+        }
+        openWheel(kind)
+    }
+
+    private fun openWheel(kind: Int) {
+        val w = when (kind) {
+            ZOOM -> zoomDial
+            EV -> evDial
+            SHUTTER -> shutterWheel
+            else -> isoWheel
+        }
+        if (!w.isEnabled) return
+        wheels.forEach { it.visibility = if (it === w) View.VISIBLE else View.GONE }
+        openWheelKind = kind
+        updateWheelButtons()
+    }
+
+    private fun closeWheel() {
+        wheels.forEach { it.visibility = View.GONE }
+        openWheelKind = -1
+        updateWheelButtons()
+    }
+
+    /** 刷新四个入口按钮上的数值，并标出当前展开的那个 */
+    private fun updateWheelButtons() {
+        zoomBtn.text = String.format("变焦 %.1f×", camera.zoom)
+        evBtn.text = if (camera.mode == CameraEngine.Mode.M) {
+            String.format("曝光 %+.1f", evDial.value * 4f - 2f)
+        } else {
+            String.format("EV %+.1f", evFromValue(evDial.value))
+        }
+        shutterBtn.text = "快门 " + shutterText(camera.manualShutterNs)
+        isoBtn.text = "ISO " + if (camera.mode == CameraEngine.Mode.S) {
+            camera.sModeIso
+        } else {
+            camera.manualIso
+        }
+        for ((i, b) in listOf(zoomBtn, evBtn, shutterBtn, isoBtn).withIndex()) {
+            b.background = pill(if (i == openWheelKind) 0x59FFFFFF else 0x2EFFFFFF)
+        }
+    }
+
+    /**
+     * 应用当前画幅：传感器是 4:3，画幅更宽时在纹理坐标上裁掉上下，
+     * 预览、照片、录像都用同一套裁切，所见即所得。
+     */
+    private fun applyFrameRatio() {
+        val target = RATIOS[ratioIndex]
+        val sensor = 4f / 3f
+        // 保留的高度比例 = 传感器画幅 / 目标画幅（2.35:1 时只保留 57% 的高度）。
+        // 之前写成 target/sensor 再 coerceAtMost(1) 会被夹成 1 —— 等于没裁，
+        // 而四边形按宽画幅摆放，画面就被压扁了。
+        val k = (sensor / target).coerceIn(0.15f, 1f)
+        val sideways = previewRotation() == 90 || previewRotation() == 270
+        if (sideways) {
+            preview.setFrameCrop(k, 1f)
+        } else {
+            preview.setFrameCrop(1f, k)
+        }
+        // 画面有效宽高比 = target，交给取景器做等比适配
+        preview.cameraAspect = if (sideways) 1f / target else target
+        preview.requestRender()
+    }
+
+    /** 曝光波轮在 AUTO/S 档调的是 EV，M 档是只读指示器，不接这个回调 */
+    private fun onExposureDial(v: Float) {
+        if (camera.mode == CameraEngine.Mode.M) return
+        camera.setEv(evIndexFromValue(v))
+    }
+
+    /** 单击循环：S → AUTO → M → S … */
+    private fun cycleMode() {
+        val next = when (camera.mode) {
+            CameraEngine.Mode.S -> CameraEngine.Mode.AUTO
+            CameraEngine.Mode.AUTO -> CameraEngine.Mode.M
+            CameraEngine.Mode.M -> CameraEngine.Mode.S
+        }
+        applyMode(next)
+    }
+
+    /** 切换模式：决定哪几个入口按钮出现、哪些只读 */
+    private fun applyMode(mode: CameraEngine.Mode, force: Boolean = false) {
+        if (!force && camera.mode == mode) return
+        camera.setMode(mode)
+        modeBtn.text = when (mode) {
+            CameraEngine.Mode.S -> "S"
+            CameraEngine.Mode.AUTO -> "AUTO"
+            CameraEngine.Mode.M -> "M"
+        }
+        val c = camera.controls
+
+        zoomBtn.visibility = View.VISIBLE
+        zoomBtn.alpha = if (c.hasZoom) 1f else 0.35f
+        zoomDial.isEnabled = c.hasZoom
+
+        when (mode) {
+            CameraEngine.Mode.AUTO -> {
+                shutterBtn.visibility = View.GONE
+                isoBtn.visibility = View.GONE
+                evBtn.visibility = View.VISIBLE
+                evBtn.alpha = 1f
+                evBtn.isEnabled = true
+                evDial.isEnabled = c.hasEv
+                evDial.caption = "EV"
+                evDial.format = { v -> String.format("%+.1f", evFromValue(v)) }
+                evDial.value = if (c.hasEv && c.evMax > c.evMin) {
+                    ((camera.evIndex - c.evMin).toFloat() / (c.evMax - c.evMin)).coerceIn(0f, 1f)
+                } else 0.5f
+            }
+
+            CameraEngine.Mode.S -> {
+                shutterBtn.visibility = View.VISIBLE
+                isoBtn.visibility = View.VISIBLE
+                isoBtn.alpha = 0.35f          // S 档 ISO 只显示，按钮置灰点不开
+                isoBtn.isEnabled = false
+                isoWheel.isEnabled = false
+                shutterWheel.isEnabled = true
+                shutterWheel.value = shutterValueFromNs(camera.manualShutterNs)
+                isoWheel.value = isoValueFromIso(camera.sModeIso)
+
+                evBtn.visibility = View.VISIBLE
+                evBtn.alpha = 1f
+                evBtn.isEnabled = true
+                evDial.isEnabled = c.hasEv
+                evDial.caption = "EV"
+                evDial.format = { v -> String.format("%+.1f", evFromValue(v)) }
+                lastEv = evFromValue(evDial.value)
+            }
+
+            CameraEngine.Mode.M -> {
+                shutterBtn.visibility = View.VISIBLE
+                isoBtn.visibility = View.VISIBLE
+                isoBtn.alpha = 1f
+                isoBtn.isEnabled = true
+                isoWheel.isEnabled = true
+                shutterWheel.isEnabled = true
+                shutterWheel.value = shutterValueFromNs(camera.manualShutterNs)
+                isoWheel.value = isoValueFromIso(camera.manualIso)
+
+                evBtn.visibility = View.VISIBLE
+                evBtn.alpha = 0.35f           // M 档 EV 只是指示器，按钮置灰
+                evBtn.isEnabled = false
+                evDial.isEnabled = false
+                evDial.caption = "曝光"
+                evDial.format = { v -> String.format("%+.1f", v * 4f - 2f) }
+            }
+        }
+
+        // 切档后如果正展开的那个波轮变成了只读（M 档的 EV、S 档的 ISO），自动收起
+        val openWheel = when (openWheelKind) {
+            ZOOM -> zoomDial
+            EV -> evDial
+            SHUTTER -> shutterWheel
+            ISO -> isoWheel
+            else -> null
+        }
+        if (openWheel != null && !openWheel.isEnabled) closeWheel()
+
+        updateWheelButtons()
+    }
+
+    /**
+     * S 档的软件自动 ISO，兼 M 档的曝光指示。
+     *
+     * 每 600ms 取一次取景器中心亮度，只在明显偏离目标时才动，每步最多 1/3 档：
+     * 之前 300ms 无条件重算，ISO 在相邻档之间来回跳，画面就是一顿一顿的。
+     */
+    private val exposureLoop = object : Runnable {
+        override fun run() {
+            // 用户正在拨轮子时先让开：一边拖一边改 ISO 会互相打架，画面看着就是卡
+            if (wheels.any { it.isDragging }) {
+                ui.postDelayed(this, 250)
+                return
+            }
+            val c = camera.controls
+            when (camera.mode) {
+                CameraEngine.Mode.S -> {
+                    preview.requestLuma()
+                    val luma = preview.lastLuma
+                    if (luma > 0.02f && c.hasManual) {
+                        val ev = evFromValue(evDial.value)
+                        val target = (0.45f * Math.pow(2.0, ev.toDouble())).toFloat()
+                            .coerceIn(0.10f, 0.90f)
+                        val ratio = target / luma
+                        if (ratio < 0.88f || ratio > 1.14f) {
+                            val gain = Math.pow(ratio.toDouble(), 0.45).toFloat()
+                                .coerceIn(0.8f, 1.25f)
+                            val cur = camera.sModeIso
+                            val next = (cur * gain).toInt().coerceIn(c.isoMin, c.isoMax)
+                            if (next != cur) {
+                                camera.setSModeIso(next)
+                                updateWheelButtons()
+                            }
+                        }
+                    }
+                }
+
+                CameraEngine.Mode.M -> {
+                    preview.requestLuma()
+                    val luma = preview.lastLuma
+                    if (luma > 0.02f) {
+                        val dev = (Math.log(luma / 0.45) / Math.log(2.0)).toFloat()
+                            .coerceIn(-2f, 2f)
+                        evDial.value = ((dev + 2f) / 4f).coerceIn(0f, 1f)
+                        updateWheelButtons()
+                    }
+                }
+
+                CameraEngine.Mode.AUTO -> Unit
+            }
+            ui.postDelayed(this, 800)
+        }
+    }
+
+    /** 相机就绪后，按这台机器支持的能力初始化拨盘 */
+    private fun setupDials(c: CameraEngine.Controls) {
+        ui.post {
+            zoomDial.isEnabled = c.hasZoom
+            zoomDial.alpha = if (c.hasZoom) 1f else 0.35f
+            zoomDial.value = 0f                       // 1.0×
+            applyMode(camera.mode, force = true)
+        }
+    }
+
+    private fun startCamera() {
+        // GlPreview 会在 GL 上下文就绪后回调 onCameraSurfaceReady → camera.open()
+        preview.onCameraSurfaceReady = { tex, recTex ->
+            val cfg = camera.open(tex, recTex)
+            if (cfg != null) {
+                sensorOrientation = cfg.sensorOrientation
+                previewSize = cfg.previewSize
+                recordSize = cfg.recordSize
+                preview.recordStreamActive = cfg.recordSize != null
+                preview.cameraAspect = cfg.previewSize.width.toFloat() / cfg.previewSize.height
+                setupDials(cfg.controls)
+
+                applyFrameRatio()
+                applyRotation()
+                ui.post {
+                    status.text = "ARRI 直出 · ${cfg.stillSize.width}×${cfg.stillSize.height}"
+                }
+            }
+        }
+        camera.onStill = { image ->
+            if (!busy) {
+                runCatching { image.close() }
+            } else {
+                processStill(image)
+            }
+        }
+    }
+
+    /** 系统显示方向（窗口朝向），0/90/180/270 */
+    private fun displayRotation(): Int =
+        when (display?.rotation ?: android.view.Surface.ROTATION_0) {
+            android.view.Surface.ROTATION_90 -> 90
+            android.view.Surface.ROTATION_180 -> 180
+            android.view.Surface.ROTATION_270 -> 270
+            else -> 0
+        }
+
+    /**
+     * 取景器角度 = 传感器方向 − 内容该转多少。
+     *
+     * 注意「窗口方向」既不是 `Display.rotation` 也不是 `screenWidthDp`：Activity 锁横屏时，
+     * 设备哪怕物理竖持，这两个值可能仍是竖屏的，直接拿来减就会把画面转成竖条。
+     * 所以用**窗口真实像素尺寸**判断横竖；只有系统真的旋转过（rotation 非 0）才采信它——
+     * 那样才能区分横屏正向和反向。
+     */
+    private fun previewRotation(): Int {
+        val b = windowBounds()
+        val landscapeWindow = b.width() > b.height()
+        val windowDeg = when (val dr = displayRotation()) {
+            0 -> if (landscapeWindow) 90 else 0
+            else -> dr
+        }
+        var rot = ((sensorOrientation - windowDeg) % 360 + 360) % 360
+        // 安全网：横屏界面里转 90/270 只会得到一条竖画面（方向信息不同步时就会这样），
+        // 直接拉回 0/180。真实机型正确算出来的本来就是 0 或 180，不受影响。
+        if (landscapeWindow && (rot == 90 || rot == 270)) rot = 0
+        return rot
+    }
+
+    /** 当前 Activity 窗口的像素尺寸 */
+    private fun windowBounds(): android.graphics.Rect {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            windowManager.currentWindowMetrics.bounds
+        } else {
+            val p = android.graphics.Point()
+            @Suppress("DEPRECATION")
+            windowManager.defaultDisplay.getSize(p)
+            android.graphics.Rect(0, 0, p.x, p.y)
+        }
+    }
+
+    /**
+     * 成片角度跟**握持方向**走（传感器方向 − 加速度计）。
+     *
+     * 这样即使系统关了自动旋转、窗口一直是竖的，横着拍出来的照片也是横的。
+     */
+    private fun photoRotation(): Int =
+        ((sensorOrientation - deviceDeg) % 360 + 360) % 360
+
+    private fun applyRotation() {
+        preview.rotationDeg = previewRotation()
+        preview.requestRender()
+    }
+
+    private fun takePhoto() {
+        if (busy) return
+        busy = true
+        shutter.animate().scaleX(0.86f).scaleY(0.86f).setDuration(80).withEndAction {
+            shutter.animate().scaleX(1f).scaleY(1f).setDuration(120).start()
+        }.start()
+        camera.capture()
+    }
+
+    /** 录像按钮外观：空闲是红圆点，录制中是红方块 */
+    private fun recordIcon(recording: Boolean): GradientDrawable = GradientDrawable().apply {
+        shape = if (recording) GradientDrawable.RECTANGLE else GradientDrawable.OVAL
+        cornerRadius = if (recording) dp(8).toFloat() else 0f
+        setColor(0xFFE5484D.toInt())
+        setStroke(dp(3), 0xCCFFFFFF.toInt())
+    }
+
+    private fun toggleRecording() {
+        if (!recording) startRecording() else stopRecording()
+    }
+
+    private fun startRecording() {
+        val p = previewSize
+        if (p == null) {
+            status.text = "相机还没就绪"
+            return
+        }
+        // 编码尺寸：有独立 4K 录制流就用它（横竖跟着握持方向转），否则退回预览流并压到 720 短边
+        val rot = photoRotation()
+        val sideways = rot == 90 || rot == 270
+        val rec = camera.currentRecordSize
+
+        preview.recordStreamActive = rec != null
+        var w: Int
+        var h: Int
+        // 画幅：4:3 的录制流按比例裁成目标画幅（高度按比例缩小）
+        val ratio = RATIOS[ratioIndex]
+        val sensorRatio = 4f / 3f
+        if (rec != null) {
+            w = if (sideways) rec.height else rec.width
+            h = if (sideways) rec.width else rec.height
+            // 三种画幅都比 4:3 宽，所以裁的是高度，宽度不变
+            if (Math.abs(ratio - sensorRatio) > 0.01f) {
+                h = (w / ratio).toInt()
+            }
+        } else {
+            w = if (sideways) p.height else p.width
+            h = if (sideways) p.width else p.height
+            val shortSide = minOf(w, h)
+            if (shortSide > VIDEO_SHORT_SIDE) {
+                val k = VIDEO_SHORT_SIDE.toFloat() / shortSide
+                w = (w * k).toInt()
+                h = (h * k).toInt()
+            }
+        }
+        // H.264 要求偶数尺寸
+        w = (w / 2) * 2
+        h = (h / 2) * 2
+
+        val surface = recorder.start(w, h, 30)
+        if (surface == null) {
+            status.text = "录像启动失败（编码器不可用）"
+            return
+        }
+        preview.setEncoderTarget(surface, w, h, rot)
+        recording = true
+        recordStart = android.os.SystemClock.elapsedRealtime()
+        recordBtn.background = recordIcon(true)
+        status.text = "● 录制中 00:00"
+        ui.post(ticker)
+        // 编码器的 EGL 表面是在 GL 线程上建的，几百毫秒后才知道成没成；
+        // 失败就直接停掉并说清原因，别让用户录了半天才发现没录上
+        ui.postDelayed({
+            val err = preview.lastEglError
+            if (recording && err != null) {
+                stopRecording()
+                status.text = "录像不可用：$err"
+            }
+        }, 700)
+    }
+
+    private fun stopRecording() {
+        if (!recording) return
+        recording = false
+        ui.removeCallbacks(ticker)
+        recordBtn.background = recordIcon(false)
+        status.text = "正在保存录像…"
+        // 顺序很重要：先让 GL 线程停止写编码器（并等它确认），再收编码器。
+        // 之前直接 stop，GL 线程可能还在 swap，muxer 收到废数据 → 保存失败。
+        work.execute {
+            preview.stopEncoderAndWait(1500)
+            val uri = recorder.stop()
+            ui.post {
+                status.text = if (uri != null) {
+                    "已保存录像到 相册/Movies/ArcCam"
+                } else {
+                    "录像保存失败：${recorder.lastError ?: "未知原因"}"
+                }
+            }
+        }
+    }
+
+    private fun processStill(image: Image) {
+        work.execute {
+            try {
+                val t0 = System.currentTimeMillis()
+                val (argb, w, h) = PhotoProcessor.yuvToArgb(image, strength, lut)
+                image.close()
+                val (rotated0, rw0, rh0) = PhotoProcessor.rotate(argb, w, h, photoRotation())
+                // 按当前画幅居中裁切，和取景器看到的构图一致
+                val (rotated, rw, rh) = PhotoProcessor.cropToAspect(
+                    rotated0, rw0, rh0, RATIOS[ratioIndex]
+                )
+                val uri = PhotoProcessor.saveJpeg(this, rotated, rw, rh)
+                val ms = System.currentTimeMillis() - t0
+                ui.post {
+                    busy = false
+                    status.text = if (uri != null) {
+                        "已保存 ${rw}×${rh} · ${ms}ms"
+                    } else {
+                        "保存失败"
+                    }
+                }
+            } catch (t: Throwable) {
+                runCatching { image.close() }
+                Log.w(TAG, "处理失败: ${t.message}")
+                ui.post {
+                    busy = false
+                    status.text = "处理失败: ${t.message}"
+                    Toast.makeText(this, "处理失败", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray,
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == REQ_CAMERA) {
+            if (grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) {
+                startCamera()
+            } else {
+                status.text = "没有相机权限"
+            }
+        }
+    }
+
+    override fun onPause() {
+        super.onPause()
+        orientation.stop()
+        if (recording) stopRecording()
+        preview.onPause()
+        camera.close()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        orientation.start()
+        preview.onResume()
+        // GL 表面会在 onResume 后重建，届时 onCameraSurfaceReady 会再回调一次 → 重新开相机
+        if (checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+            startCamera()
+        }
+    }
+
+    private fun pill(argb: Int): GradientDrawable = GradientDrawable().apply {
+        cornerRadius = dp(99).toFloat()
+        setColor(argb)
+    }
+
+    private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
+
+
+
+    /** 快门与录像按钮同尺寸 */
+
+    private val BUTTON_SIZE: Int get() = dp(64)
+
+    companion object {
+        private const val TAG = "arccam"
+        private const val REQ_CAMERA = 21
+
+
+
+
+
+        /** ARRI 曝光表的测光区域：Spot / Center / Multi */
+
+        private val METER_NAMES = listOf("点测", "中央重点", "多区")
+
+
+
+        /** 画幅：3:2 / 16:9 / 2.35:1 */
+
+        private val RATIOS = listOf(3f / 2f, 16f / 9f, 2.35f)
+
+        private val RATIO_NAMES = listOf("3:2", "16:9", "2.35:1")
+
+
+
+        private const val ZOOM = 0
+
+        private const val EV = 1
+
+        private const val SHUTTER = 2
+
+        private const val ISO = 3
+
+
+
+        /** 录像短边上限：720 最稳；1080 在部分机型上编码器跟不上，会拖慢取景器 */
+        private const val VIDEO_SHORT_SIDE = 720
+    }
+}

@@ -1,0 +1,73 @@
+#magic8pro {
+  position: relative;
+  width: 900px;
+  height: 2010px;
+  overflow: hidden;
+  background: #000000;
+  transform: rotate(90deg);
+}
+
+#a {
+  position: absolute;
+  top: 1890px;
+  width: 1350px;
+  height: 900px;
+  background: #08fc00;
+  transform: rotate(-90deg);
+}
+
+#a {
+  position: absolute;
+  left: 75px;
+  top: 75px;
+  width: 150px;
+  height: 150px;
+  background: #ff0000;
+  border: 10px  solid #ffffff;
+  border-radius: 50%;
+}
+
+#a {
+  position: absolute;
+  left: 300px;
+  top: 75px;
+  width: 150px;
+  height: 150px;
+  background: #808080;
+  border: 10px  solid #ffffff;
+  border-radius: 50%;
+}
+
+#a {
+  position: absolute;
+  left: 90px;
+  top: 505px;
+  width: 240px;
+  height: 120px;
+  border-radius: 40px;
+  background: #808080;
+  transform: rotate(-90deg);
+}
+
+#a {
+  position: absolute;
+  left: 800px;
+  top: 395px;
+  width: 100px;
+  height: 580px;
+  border-radius: 20px;
+  background: #808080;
+  transform: rotate(90deg);
+}
+
+#a {
+  position: absolute;
+  left: 800px;
+  top: 275px;
+  width: 100px;
+  height: 580px;
+  border-radius: 20px;
+  background: #808080;
+  transform: rotate(90deg);
+}
+
