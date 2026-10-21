@@ -11,10 +11,10 @@
 
 ## 安装
 
-编译好的调试版在 [`dist/magirri-vex-1.0-debug.apk`](dist/magirri-vex-1.0-debug.apk)（8.0 MB，含液态玻璃库的 AndroidX 传递依赖）。
+编译好的调试版在 [`dist/magirri-vex-2.0-debug.apk`](dist/magirri-vex-2.0-debug.apk)（8.0 MB，含液态玻璃库的 AndroidX 传递依赖）。
 
 ```bash
-adb install -r dist/magirri-vex-1.0-debug.apk
+adb install -r dist/magirri-vex-2.0-debug.apk
 ```
 
 或者把 APK 拷进手机点开安装（需要在系统里允许"未知来源"）。

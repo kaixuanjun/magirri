@@ -54,7 +54,7 @@ Camera2 静态帧 → BT.709 有限范围转 RGB → CPU 查同一张 LUT → �
 ## 安装
 
 ```
-adb install -r dist/magirri-lume-1.0-debug.apk
+adb install -r dist/magirri-lume-2.0-debug.apk
 ```
 
 最低 Android 8.0（API 26）。
