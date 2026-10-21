@@ -646,7 +646,7 @@ class MainActivity : Activity() {
         valueCol.addView(
             mfBtn,
             LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
             ).apply { topMargin = dp(6) }
         )
 
@@ -658,7 +658,7 @@ class MainActivity : Activity() {
             valueCol.addView(
                 b,
                 LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
                 ).apply { topMargin = dp(6) }
             )
         }
@@ -707,9 +707,10 @@ class MainActivity : Activity() {
             setTextColor(Color.WHITE)
             gravity = Gravity.CENTER
             isSingleLine = true          // 「对焦 21cm」这类长文案不折行
-            // 面板宽度随机型密度变化，字号自适应才不会把「快门 1/125」截断
+            // 面板宽度随机型密度变化，字号自适应才不会把「快门 1/125」截断。
+            // 注意：必须是固定/撑满宽度，WRAP_CONTENT 下自适应没有约束可用，照样会截断。
             setAutoSizeTextTypeUniformWithConfiguration(
-                8, 13, 1, android.util.TypedValue.COMPLEX_UNIT_SP
+                7, 13, 1, android.util.TypedValue.COMPLEX_UNIT_SP
             )
             setPadding(dp(10), dp(7), dp(10), dp(7))
             // 按钮自带灰色圆角胶囊；面板底是纯黑，两者区分开
@@ -920,96 +921,143 @@ class MainActivity : Activity() {
         fpsValue.text = FPS_NAMES[fpsIndex]
     }
 
+    /** 设置页：全屏，左侧一级菜单 / 右侧二级菜单，模仿相机菜单 */
     private fun buildSettingsPanel() {
         val overlay = FrameLayout(this).apply {
-            setBackgroundColor(0xF2000000.toInt())
-            isClickable = true
-            setOnClickListener { openSettings() }     // 点空白关闭
+            setBackgroundColor(0xFF000000.toInt())
         }
-        val box = LinearLayout(this).apply {
+        val page = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(18), dp(16), dp(18), dp(18))
-            background = GradientDrawable().apply {
-                cornerRadius = dp(18).toFloat()
-                setColor(0xFF101010.toInt())
-                setStroke(dp(1), 0x33FFFFFF)
-            }
-            isClickable = true
+            setPadding(dp(28), dp(18), dp(28), dp(18))
         }
 
-        box.addView(TextView(this).apply {
-            text = "设置"
+        // ---- 标题行 ----
+        val titleRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        titleRow.addView(TextView(this).apply {
+            text = "菜单"
             setTextColor(Color.WHITE)
-            textSize = 16f
-            setPadding(dp(2), dp(2), dp(2), dp(12))
+            textSize = 18f
+        }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        titleRow.addView(TextView(this).apply {
+            text = "点击空白 / 返回键 关闭"
+            setTextColor(0x66FFFFFF)
+            textSize = 11f
         })
+        page.addView(titleRow, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+        ).apply { bottomMargin = dp(16) })
 
-        fun row(label: String): TextView {
-            val v = TextView(this).apply {
+        // ---- 主体：左一级 / 右二级 ----
+        val body = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+        }
+
+        // 左：一级菜单
+        val leftCol = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(0xFF0A0A0A.toInt())
+            setPadding(dp(4), dp(8), dp(4), dp(8))
+        }
+        val category = TextView(this).apply {
+            text = "拍摄"
+            setTextColor(Color.WHITE)
+            textSize = 14f
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(18), dp(12), dp(18), dp(12))
+            background = GradientDrawable().apply {
+                setColor(0x33FFFFFF)
+                cornerRadius = dp(8).toFloat()
+            }
+        }
+        leftCol.addView(category, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+        ).apply { topMargin = dp(4) })
+        body.addView(leftCol, LinearLayout.LayoutParams(dp(150), ViewGroup.LayoutParams.MATCH_PARENT)
+            .apply { rightMargin = dp(18) })
+
+        // 右：二级菜单（拍摄类别下的三项）
+        val rightCol = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+
+        fun item(label: String, onTap: (TextView) -> Unit): TextView {
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(8), dp(14), dp(8), dp(14))
+                setBackgroundColor(0x00000000)
+                isClickable = true
+            }
+            row.addView(TextView(this).apply {
+                text = label
+                setTextColor(0xDDDDDDDD.toInt())
+                textSize = 14f
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+
+            val value = TextView(this).apply {
                 setTextColor(Color.WHITE)
                 textSize = 13f
                 gravity = Gravity.CENTER
-                setPadding(dp(16), dp(9), dp(16), dp(9))
+                setPadding(dp(16), dp(7), dp(16), dp(7))
                 background = pill(0x2EFFFFFF)
             }
-            val line = LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-                setPadding(0, dp(7), 0, dp(7))
+            row.addView(value)
+            row.setOnClickListener {
+                onTap(value)
             }
-            line.addView(TextView(this).apply {
-                text = label
-                setTextColor(0xCCFFFFFF.toInt())
-                textSize = 13f
-            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-            line.addView(v)
-            box.addView(line)
-            return v
+            rightCol.addView(row, LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+            ))
+            rightCol.addView(View(this).apply { setBackgroundColor(0x1AFFFFFF) },
+                LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(1)))
+            return value
         }
 
-        ratioValue = row("画幅")
-        ratioValue.setOnClickListener {
+        ratioValue = item("画幅") {
             ratioIndex = (ratioIndex + 1) % RATIOS.size
             applyFrameRatio()
             refreshSettings()
         }
-
-        resValue = row("分辨率")
-        resValue.setOnClickListener {
+        resValue = item("分辨率") {
             resIndex = (resIndex + 1) % RES_NAMES.size
             camera.recordPreference = resIndex
             restartCamera()
             refreshSettings()
         }
-
-        fpsValue = row("帧率")
-        fpsValue.setOnClickListener {
+        fpsValue = item("帧率") {
             fpsIndex = (fpsIndex + 1) % FPS_NAMES.size
             camera.targetFps = FPS_VALUES[fpsIndex]
             restartCamera()
             refreshSettings()
         }
 
-        box.addView(TextView(this).apply {
+        rightCol.addView(TextView(this).apply {
             text = "分辨率 / 帧率改完会重启相机"
             setTextColor(0x66FFFFFF)
             textSize = 11f
-            setPadding(dp(2), dp(10), dp(2), 0)
+            setPadding(dp(8), dp(14), dp(8), 0)
         })
 
-        overlay.addView(
-            box,
-            FrameLayout.LayoutParams(
-                dp(280),
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                Gravity.CENTER
-            )
-        )
+        body.addView(rightCol, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
+        page.addView(body, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f
+        ))
+
+        overlay.addView(page, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT
+        ))
+        // page 铺满全屏，点击事件到不了 overlay，所以关闭监听要挂在 page 上；
+        // 条目自己是 clickable 的，会把点击吃掉
+        page.setOnClickListener { openSettings() }
+        overlay.setOnClickListener { openSettings() }
+
         (window.decorView as FrameLayout).addView(
             overlay,
             FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT
             )
         )
         settingsPanel = overlay
