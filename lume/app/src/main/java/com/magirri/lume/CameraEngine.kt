@@ -458,6 +458,59 @@ class CameraEngine(private val context: Context) {
     /** 当前镜头在列表里的下标 */
     fun lensIndex(): Int = lenses.indexOfFirst { it.id == activeLensId }.coerceAtLeast(0)
 
+    /**
+     * 测光模式：0 点测 / 1 中央重点 / 2 多区。
+     *
+     * Camera2 没有"测光模式"这个开关，测光范围只有 [CaptureRequest.CONTROL_AE_REGIONS]：
+     * 给一个矩形就是按这块算 AE，给 null 就交回全画面。所以三种模式就是三种矩形：
+     *  - 点测：AF 落下的小区域（没点过就用中心一小块）
+     *  - 中央：中心一大块
+     *  - 多区：null，让 HAL 全画面评估
+     */
+    @Volatile var meteringMode = 1
+    private var lastMeterRect = -1
+
+    fun setMetering(mode: Int) {
+        if (mode == meteringMode) return
+        meteringMode = mode
+        val name = when (mode) {
+            0 -> "点测"
+            1 -> "中央重点"
+            else -> "多区"
+        }
+        Log.i(TAG, "测光模式 -> $name")
+        reapply(immediate = true)
+    }
+
+    private fun applyMetering(builder: CaptureRequest.Builder) {
+        val a = activeArray ?: return
+        if (meteringMode == 2) {
+            builder.set(CaptureRequest.CONTROL_AE_REGIONS, null)
+            return
+        }
+        val rect = if (meteringMode == 0) {
+            afRegion ?: run {
+                val h = (Math.min(a.width(), a.height()) * 0.06f).toInt().coerceAtLeast(8)
+                android.graphics.Rect(a.centerX() - h, a.centerY() - h, a.centerX() + h, a.centerY() + h)
+            }
+        } else {
+            val h = (Math.min(a.width(), a.height()) * 0.22f).toInt().coerceAtLeast(8)
+            android.graphics.Rect(a.centerX() - h, a.centerY() - h, a.centerX() + h, a.centerY() + h)
+        }
+        if (rect.width() != lastMeterRect) {
+            lastMeterRect = rect.width()
+            Log.i(TAG, "AE 测光区域 ${rect.width()}×${rect.height()}（模式 $meteringMode）")
+        }
+        builder.set(
+            CaptureRequest.CONTROL_AE_REGIONS,
+            arrayOf(
+                android.hardware.camera2.params.MeteringRectangle(
+                    rect, android.hardware.camera2.params.MeteringRectangle.METERING_WEIGHT_MAX
+                )
+            )
+        )
+    }
+
     /** 对焦模式：AF-S 单次、AF-C 连续、MF 手动锁焦 */
     private fun applyFocus(builder: CaptureRequest.Builder) {
         // 点击对焦落下的区域：AF-S / AF-C 都生效，MF 忽略
@@ -542,6 +595,7 @@ class CameraEngine(private val context: Context) {
 
     /** 把变焦 / 曝光（含 S/M 手动档）写进任意请求 */
     private fun applyZoomAndEv(builder: CaptureRequest.Builder) {
+        applyMetering(builder)
         // 目标帧率：约束 AE 的帧率区间，曝光时间就不会超过 1/fps
         fpsRange?.let { builder.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, it) }
         when (mode) {

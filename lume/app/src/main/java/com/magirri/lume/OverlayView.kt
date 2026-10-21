@@ -19,6 +19,24 @@ class OverlayView(context: Context) : View(context) {
         set(v) { field = v; invalidate() }
     var levelOn = false
         set(v) { field = v; invalidate() }
+    /** 点测光时在测光点画一个圈 */
+    var meteringSpot = false
+        set(v) { field = v; invalidate() }
+
+    /** 测光点在 view 内的坐标（px），-1 表示用画面中心 */
+    var meteringX = -1f
+        set(v) { field = v; invalidate() }
+    var meteringY = -1f
+        set(v) { field = v; invalidate() }
+
+    /** 显式 setter：属性访问在 MainActivity 里被 Kotlin 误判，这里补一个方法 */
+    fun setMeterSpot(on: Boolean, x: Float = -1f, y: Float = -1f) {
+        meteringSpot = on
+        meteringX = x
+        meteringY = y
+        invalidate()
+    }
+
     var histogramOn = false
         set(v) { field = v; invalidate() }
 
@@ -54,6 +72,23 @@ class OverlayView(context: Context) : View(context) {
         val w = width.toFloat()
         val h = height.toFloat()
         if (w <= 0 || h <= 0) return
+
+        // ---- 点测光指示 ----
+        if (meteringSpot) {
+            val cx = if (meteringX >= 0f) meteringX else w / 2f
+            val cy = if (meteringY >= 0f) meteringY else h / 2f
+            val r = dp(22f)
+            val spot = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = 0xFFFFD400.toInt()
+                strokeWidth = dp(1.6f)
+                style = Paint.Style.STROKE
+            }
+            canvas.drawCircle(cx, cy, r, spot)
+            canvas.drawLine(cx - r * 1.5f, cy, cx - r * 1.15f, cy, spot)
+            canvas.drawLine(cx + r * 1.15f, cy, cx + r * 1.5f, cy, spot)
+            canvas.drawLine(cx, cy - r * 1.5f, cx, cy - r * 1.15f, spot)
+            canvas.drawLine(cx, cy + r * 1.15f, cx, cy + r * 1.5f, spot)
+        }
 
         // ---- 三分线 ----
         if (gridOn) {

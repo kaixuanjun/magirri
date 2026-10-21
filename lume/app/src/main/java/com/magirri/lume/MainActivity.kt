@@ -373,6 +373,8 @@ class MainActivity : Activity() {
                     val uv = previewPointToUv(e.x, e.y)
                     if (uv != null && camera.focusMode != CameraEngine.Focus.MF) {
                         camera.focusAt(uv.first, uv.second)
+            // 点测光跟着手指：测光圈画在点击处
+            if (meterMode == 0) this@MainActivity.overlay.setMeterSpot(true, e.x, e.y)
                         showFocusRing(e.x, e.y)
                         v.performClick()
                     } else if (uv == null) {
@@ -585,8 +587,12 @@ class MainActivity : Activity() {
             background = pill(0x33FFFFFF)
             setOnClickListener {
                 meterMode = (meterMode + 1) % METER_NAMES.size
-                preview.meterMode = meterMode
+                preview.meterMode = meterMode        // 软件测光（曝光指示 / S 档 ISO）
+                camera.setMetering(meterMode)        // 真正的相机 AE 区域
                 meterBtn.text = METER_NAMES[meterMode]
+                // 注意：这里在 TextView.apply{} 里，裸写的 overlay 会解析成
+                // View.getOverlay()（ViewOverlay），必须显式限定到 Activity 字段
+                this@MainActivity.overlay.setMeterSpot(meterMode == 0)
             }
         })
         camCol.addView(
@@ -1006,6 +1012,7 @@ class MainActivity : Activity() {
      * （performClick 被调了两遍），第二次把刚打开的菜单立刻关掉 —— 表现就是"闪一下"。
      * 现在打开只管打开，关闭只走右上角返回 / 系统返回键。
      */
+
     private fun openSettings() {
         if (!::settingsPanel.isInitialized) buildSettingsPanel()
         if (settingsPanel.visibility == View.VISIBLE && settingsPanel.alpha > 0.6f) return
@@ -1014,8 +1021,12 @@ class MainActivity : Activity() {
         settingsPanel.animate().cancel()
         settingsPanel.visibility = View.VISIBLE
         settingsPanel.alpha = 0f
-        settingsPanel.translationY = dp(12).toFloat()
-        settingsPanel.animate().alpha(1f).translationY(0f).setDuration(240).start()
+        settingsPanel.translationY = dp(14).toFloat()
+        // 首次打开时面板刚 addView 进 decor，还没走过布局；直接在同一个消息里
+        // 启动动画会跟首次绘制挤在一起，看起来就是"没有动画"。放到下一帧再跑。
+        settingsPanel.post {
+            settingsPanel.animate().alpha(1f).translationY(0f).setDuration(240).start()
+        }
     }
 
     /** 关闭菜单 */
