@@ -475,6 +475,25 @@ class CameraEngine(private val context: Context) {
      *  - 多区：null，让 HAL 全画面评估
      */
     @Volatile var meteringMode = 1
+
+    /**
+     * 自动测光闭环算出来的曝光偏移（单位：EV 档），叠加在用户设定的 EV 之上。
+     * 单独放一个量，是为了让 EV 拨盘始终显示"用户设定的值"，不被闭环改来改去。
+     */
+    @Volatile private var aeOffsetStops = 0f
+    @Volatile private var lastAeOffsetApplied = Float.NaN
+
+    /** 当前闭环偏移（给 UI 看） */
+    val aeOffsetNow: Float get() = aeOffsetStops
+
+    fun setAeOffset(stops: Float) {
+        val v = stops.coerceIn(-4f, 4f)
+        aeOffsetStops = v
+        if (lastAeOffsetApplied.isNaN() || Math.abs(v - lastAeOffsetApplied) >= 0.02f) {
+            lastAeOffsetApplied = v
+            reapply()
+        }
+    }
     private var lastMeterRect = -1
 
     fun setMetering(mode: Int) {
@@ -708,6 +727,8 @@ class CameraEngine(private val context: Context) {
         }
         // 从手动档切回自动：发一次 AE 预拍，让它快速收敛（否则会从手动曝光的
         // 那个点慢慢爬，体感要等好几秒）
+        aeOffsetStops = 0f
+        lastAeOffsetApplied = Float.NaN
         if (m == Mode.AUTO) {
             aePrecapture = true
             aePrecaptureAt = android.os.SystemClock.uptimeMillis()

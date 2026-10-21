@@ -733,6 +733,7 @@ class MainActivity : Activity() {
         ui.postDelayed({ hideSystemBars() }, 1200)
         startStatusTicker()
         startOverlayTicker()
+        ui.postDelayed(meterServo, 600)   // 实时测光闭环
         // 菜单在启动时就建好并隐藏：首次打开和后面每次走完全一样的代码路径，
         // 不会再出现"第一次没有动画"这种只在首次生效的怪问题
         buildSettingsPanel()
@@ -1569,9 +1570,91 @@ class MainActivity : Activity() {
     private fun remeterAt() {
         ui.removeCallbacks(spotMeterTask)
         preview.requestLuma()
-        // 等下一帧渲染完再读亮度（requestLuma 只是打标记）
-        ui.postDelayed(spotMeterTask, 90)
+        // 等下一帧渲染完再读亮度（requestLuma 只是打标记），然后立刻推一次
+        ui.postDelayed(spotMeterTask, 70)
     }
+
+    /**
+     * 常驻的实时测光闭环（≈8Hz）。
+     *
+     * 原生相机的点测光是"一直盯着中心那一小块"：手机一晃、那里明暗一变，曝光立刻跟上。
+     * 之前只在点击时测一次，所以晃手机没反应、点击又时灵时不灵。
+     *
+     *  - AUTO：不能直接改 ISO/快门（AE 管着），所以用 AE 曝光补偿当"遥控杆"，
+     *    自己测点测区的亮度，闭环算偏移量（不覆盖用户拨盘上的 EV）
+     *  - S   ：直接调 ISO
+     *  - M   ：只更新曝光指示
+     */
+    private inner class MeterServo : Runnable {
+        private var lastLumaSeen = -1f
+        private var stall = 0
+        private var autoOffsetDead = false      // HAL 不理 EV 补偿时置位，避免把偏移推满
+
+        override fun run() {
+            if (wheels.any { it.isDragging }) {          // 用户正在拨轮，别抢
+                ui.postDelayed(this, 160)
+                return
+            }
+            preview.requestLuma()
+            val luma = preview.lastLuma
+            val c = camera.controls
+            if (luma <= 0.015f) {
+                ui.postDelayed(this, 160)
+                return
+            }
+            val ev = evFromValue(evDial.value)
+            val target = (0.45f * Math.pow(2.0, ev.toDouble())).toFloat().coerceIn(0.06f, 0.95f)
+            val err = (Math.log((target / luma).toDouble()) / Math.log(2.0)).toFloat()
+
+            when (camera.mode) {
+                CameraEngine.Mode.AUTO -> {
+                    if (autoOffsetDead) {
+                        ui.postDelayed(this, 200)
+                        return
+                    }
+                    if (Math.abs(err) > 0.08f) {
+                        // 绝对量修正：err 是在"当前偏移已生效"的前提下测出来的残差，
+                        // 所以直接加上去就行；但每拍限幅 0.3 档，避免大跳
+                        val step = err.coerceIn(-0.3f, 0.3f)
+                        val next = (camera.aeOffsetNow + step).coerceIn(-2.5f, 2.5f)
+                        camera.setAeOffset(next)
+
+                        // 无响应检测：上一拍也改了偏移、但画面亮度几乎没动 → HAL 不理
+                        val moved = Math.abs(luma - lastLumaSeen)
+                        stall = if (moved < 0.006f) stall + 1 else 0
+                        if (stall > 8) {
+                            autoOffsetDead = true
+                            camera.setAeOffset(0f)
+                            showStatus("这台设备不支持曝光补偿微调，点测仅用于测光提示")
+                        }
+                    } else {
+                        stall = 0
+                    }
+                    lastLumaSeen = luma
+                }
+
+                CameraEngine.Mode.S -> {
+                    if (Math.abs(err) > 0.06f && c.hasManual) {
+                        val cur = camera.sModeIso
+                        val next = (cur * Math.pow(2.0, (err * 0.6f).toDouble()))
+                            .toInt().coerceIn(c.isoMin, c.isoMax)
+                        if (next != cur) {
+                            camera.setSModeIso(next)
+                            updateWheelButtons()
+                        }
+                    }
+                }
+
+                CameraEngine.Mode.M -> {
+                    val dev = (Math.log(luma / 0.45) / Math.log(2.0)).toFloat().coerceIn(-2f, 2f)
+                    evDial.value = ((dev + 2f) / 4f).coerceIn(0f, 1f)
+                }
+            }
+            ui.postDelayed(this, 110)
+        }
+    }
+
+    private val meterServo = MeterServo()
 
     /** 点测光的即时调整任务（inner class 才能 post 自己再补一枪） */
     private inner class SpotMeterTask : Runnable {
@@ -1581,6 +1664,18 @@ class MainActivity : Activity() {
                     correctSExposure(preview.lastLuma, instant = true)
                     preview.requestLuma()
                     ui.postDelayed(this, 120)   // 再补一枪，抵消一次读数的抖动
+                }
+                CameraEngine.Mode.AUTO -> {
+                    // 点击后立刻按新测光点推一次 AE 补偿
+                    val luma = preview.lastLuma
+                    if (luma > 0.015f) {
+                        val ev = evFromValue(evDial.value)
+                        val target = (0.45f * Math.pow(2.0, ev.toDouble())).toFloat()
+                        val err = (Math.log((target / luma).toDouble()) / Math.log(2.0)).toFloat()
+                        if (Math.abs(err) > 0.06f) {
+                            camera.setAeOffset((camera.aeOffsetNow + err).coerceIn(-4f, 4f))
+                        }
+                    }
                 }
                 CameraEngine.Mode.M -> {
                     val luma = preview.lastLuma
