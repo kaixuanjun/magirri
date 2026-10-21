@@ -54,6 +54,8 @@ class MainActivity : Activity() {
     private var focusIndex = 1          // 默认 AF-C
     private var focusDiopters = 0f
     private lateinit var settingsBtn: TextView
+    private lateinit var lensBtn: TextView
+    private var lensIndexNow = 0
     private lateinit var settingsPanel: View
     private lateinit var ratioValue: TextView
     private lateinit var resValue: TextView
@@ -287,6 +289,11 @@ class MainActivity : Activity() {
         camera.onPreviewSize = { size ->
             preview.cameraAspect = size.width.toFloat() / size.height
         }
+        camera.onLensSwitched = {
+            setupDials(camera.controls)
+            applyFrameRatio()
+            updateLensButton()
+        }
         camera.onError = { msg ->
             ui.post {
                 status.text = msg
@@ -399,8 +406,6 @@ class MainActivity : Activity() {
                 preview.targetZoom = zoomLevel
                 preview.requestRender()
                 updateWheelButtons()
-                cameraZoomTick.removeCallbacks(cameraZoomTask)
-                cameraZoomTick.postDelayed(cameraZoomTask, 260)
             }
         }
         evDial = WheelView(this, "EV").apply {
@@ -455,13 +460,13 @@ class MainActivity : Activity() {
             w.visibility = View.GONE
             wheelStrip.addView(
                 w,
-                LinearLayout.LayoutParams(dp(58), ViewGroup.LayoutParams.MATCH_PARENT)
+                LinearLayout.LayoutParams(dp(46), ViewGroup.LayoutParams.MATCH_PARENT)
                     .apply { marginEnd = dp(6) }
             )
         }
         panel.addView(
             wheelStrip,
-            LinearLayout.LayoutParams(dp(64), ViewGroup.LayoutParams.MATCH_PARENT)
+            LinearLayout.LayoutParams(dp(50), ViewGroup.LayoutParams.MATCH_PARENT)
         )
 
         // 横向两栏：左边数值按钮，右边快门/录像/模式键
@@ -500,9 +505,33 @@ class MainActivity : Activity() {
             background = recordIcon(false)
             setOnClickListener { toggleRecording() }
         }
-        camCol.addView(
+
+        // 设置按钮挪到录像左边，跟录像同一行
+        settingsBtn = TextView(this).apply {
+            text = "⚙"
+            setTextColor(Color.WHITE)
+            textSize = 17f
+            gravity = Gravity.CENTER
+            background = pill(0x33FFFFFF)
+            setOnClickListener { openSettings() }
+        }
+        val recordRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        recordRow.addView(
+            settingsBtn,
+            LinearLayout.LayoutParams(dp(34), dp(34)).apply { rightMargin = dp(6) }
+        )
+        recordRow.addView(
             recordBtn,
-            LinearLayout.LayoutParams(BUTTON_SIZE, BUTTON_SIZE).apply { bottomMargin = dp(12) }
+            LinearLayout.LayoutParams(BUTTON_SIZE, BUTTON_SIZE)
+        )
+        camCol.addView(
+            recordRow,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { bottomMargin = dp(12) }
         )
 
         modeBtn = TextView(this).apply {
@@ -556,19 +585,27 @@ class MainActivity : Activity() {
             LinearLayout.LayoutParams(dp(66), dp(36)).apply { topMargin = dp(6) }
         )
 
-        // 设置：和上面几个按钮同款胶囊，排在对焦模式下面
-        settingsBtn = TextView(this).apply {
-            text = "⚙"
+        // 换镜头：只有多摄机型才出现
+        lensBtn = TextView(this).apply {
+            text = "镜头"
             setTextColor(Color.WHITE)
-            textSize = 17f
+            textSize = 12f
             gravity = Gravity.CENTER
+            isSingleLine = true
             background = pill(0x33FFFFFF)
-            setOnClickListener { openSettings() }
+            visibility = View.GONE
+            setOnClickListener {
+                if (camera.lenses.size <= 1) return@setOnClickListener
+                lensIndexNow = (lensIndexNow + 1) % camera.lenses.size
+                camera.switchToLens(lensIndexNow)
+                updateLensButton()
+            }
         }
         camCol.addView(
-            settingsBtn,
+            lensBtn,
             LinearLayout.LayoutParams(dp(66), dp(36)).apply { topMargin = dp(6) }
         )
+
 
         // 画幅：3:2 / 16:9 / 2.35:1，循环切换
         ratioBtn = TextView(this).apply {
@@ -1019,12 +1056,17 @@ class MainActivity : Activity() {
         }, 900)
     }
 
-    private val cameraZoomTick = android.os.Handler(android.os.Looper.getMainLooper())
-    private val cameraZoomTask = Runnable {
-        // 交给相机：多摄机型上这一步会切到长焦/超广角，切不切由 HAL 决定
-        camera.setZoom(zoomLevel)
-        preview.cameraZoom = camera.zoom
-        preview.requestRender()
+    /** 镜头按钮：显示当前镜头的相对倍率 */
+    private fun updateLensButton() {
+        val ls = camera.lenses
+        if (ls.size <= 1) {
+            lensBtn.visibility = View.GONE
+            return
+        }
+        lensBtn.visibility = View.VISIBLE
+        lensIndexNow = camera.lensIndex()
+        val r = ls.getOrNull(lensIndexNow)?.ratio ?: 1f
+        lensBtn.text = if (r < 0.95f) String.format("%.1f×", r) else String.format("%.0f×", r)
     }
 
     /** 切对焦模式：相机侧改 AF 模式，UI 侧决定要不要露出「对焦」按钮 */

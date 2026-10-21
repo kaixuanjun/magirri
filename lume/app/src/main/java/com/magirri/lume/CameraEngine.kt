@@ -91,6 +91,23 @@ class CameraEngine(private val context: Context) {
     /** 录制分辨率偏好：0 = 4K，1 = 1080P，2 = 720P（下次开会话生效） */
     var recordPreference = 0
 
+    /** 一颗物理镜头 */
+    data class Lens(val id: String, val ratio: Float, val focal: Float)
+
+    /** 所有后摄镜头（按焦距排）；ratio 是相对主摄的倍率 */
+    var lenses: List<Lens> = emptyList()
+        private set
+
+    /** 当前正在用的镜头 id */
+    var activeLensId: String = ""
+        private set
+
+    /** 换镜头后回调（MainActivity 用来重刷控件与画幅） */
+    var onLensSwitched: (() -> Unit)? = null
+
+    private var lastTexture: SurfaceTexture? = null
+    private var lastRecordTexture: SurfaceTexture? = null
+
     /** 目标帧率（同时约束 AE 的帧率范围与编码器） */
     var targetFps = 30
 
@@ -177,22 +194,19 @@ class CameraEngine(private val context: Context) {
 
     fun open(texture: SurfaceTexture, recordTexture: SurfaceTexture? = null): Config? {
         if (device != null) return null   // 已经在跑了，别重复打开
+        lastTexture = texture
+        lastRecordTexture = recordTexture
         val manager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
-        // 记一下后摄数量，方便判断这台机器能不能靠 CONTROL_ZOOM_RATIO 换镜头
-        run {
-            val backIds = manager.cameraIdList.filter { cid ->
-                manager.getCameraCharacteristics(cid)
-                    .get(CameraCharacteristics.LENS_FACING) == CameraMetadata.LENS_FACING_BACK
+        // 枚举后摄镜头：用焦距判断谁是超广角 / 主摄 / 长焦
+        if (lenses.isEmpty()) lenses = scanLenses(manager)
+        val id = activeLensId.takeIf { it.isNotEmpty() && it in lenses.map { l -> l.id } }
+            ?: lenses.firstOrNull { it.ratio <= 1.01f }?.id
+            ?: lenses.firstOrNull()?.id
+            ?: manager.cameraIdList.firstOrNull() ?: run {
+                onError?.invoke("没有可用相机")
+                return null
             }
-            Log.i(TAG, "后摄 ${backIds.size} 个：${backIds.joinToString()}")
-        }
-        val id = manager.cameraIdList.firstOrNull { cid ->
-            manager.getCameraCharacteristics(cid)
-                .get(CameraCharacteristics.LENS_FACING) == CameraMetadata.LENS_FACING_BACK
-        } ?: manager.cameraIdList.firstOrNull() ?: run {
-            onError?.invoke("没有可用相机")
-            return null
-        }
+        activeLensId = id
         val chars = manager.getCameraCharacteristics(id)
         val map = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
             ?: run {
@@ -368,6 +382,47 @@ class CameraEngine(private val context: Context) {
             applyZoomAndEv(this)
         }.build()
 
+    /** 扫出所有后摄镜头，按焦距算出相对主摄的倍率 */
+    private fun scanLenses(manager: CameraManager): List<Lens> {
+        val infos = mutableListOf<Triple<String, Float, Long>>()
+        for (cid in manager.cameraIdList) {
+            try {
+                val c = manager.getCameraCharacteristics(cid)
+                if (c.get(CameraCharacteristics.LENS_FACING) != CameraMetadata.LENS_FACING_BACK) continue
+                val focal = c.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)
+                    ?.minOrNull() ?: continue
+                val size = c.get(CameraCharacteristics.SENSOR_INFO_PHYSICAL_SIZE) ?: continue
+                val area = (size.width * size.height).toLong()
+                infos += Triple(cid, focal, area)
+            } catch (_: Exception) {
+            }
+        }
+        if (infos.isEmpty()) return emptyList()
+        // 传感器最大的那颗当主摄（1.0×）
+        val main = infos.maxByOrNull { it.third }!!
+        val mainFocal = main.second
+        val list = infos.map { Lens(it.first, it.second / mainFocal, it.second) }
+            .sortedBy { it.ratio }
+        Log.i(TAG, "镜头: " + list.joinToString { "${it.id}@%.2fx".format(it.ratio) })
+        return list
+    }
+
+    /** 切到第 index 颗镜头（重开会话） */
+    fun switchToLens(index: Int) {
+        val lens = lenses.getOrNull(index) ?: return
+        if (lens.id == activeLensId) return
+        val tex = lastTexture ?: return
+        val rec = lastRecordTexture
+        activeLensId = lens.id
+        zoom = 1f
+        close()
+        open(tex, rec)
+        onLensSwitched?.invoke()
+    }
+
+    /** 当前镜头在列表里的下标 */
+    fun lensIndex(): Int = lenses.indexOfFirst { it.id == activeLensId }.coerceAtLeast(0)
+
     /** 对焦模式：AF-S 单次、AF-C 连续、MF 手动锁焦 */
     private fun applyFocus(builder: CaptureRequest.Builder) {
         // 点击对焦落下的区域：AF-S / AF-C 都生效，MF 忽略
@@ -492,8 +547,9 @@ class CameraEngine(private val context: Context) {
             }
         }
 
+        // 变焦全部交给 GL（数字变焦）；相机端不动，避免"相机跳 + GL 补"互相打架
         if (!controls.hasZoom) return
-        val z = zoom.coerceIn(1f, controls.maxZoom)
+        val z = 1f
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             builder.set(CaptureRequest.CONTROL_ZOOM_RATIO, z)
         } else {
