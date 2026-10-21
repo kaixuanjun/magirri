@@ -257,7 +257,8 @@ class MainActivity : Activity() {
         val topBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(14), 0, dp(14), 0)
+            // 屏幕有 R 角，左右各留 44dp 安全区，电量才不会被吃掉
+            setPadding(dp(44), 0, dp(44), 0)
             setBackgroundColor(Color.BLACK)
         }
         clockText = TextView(this).apply {
@@ -273,7 +274,7 @@ class MainActivity : Activity() {
         topBar.addView(clockText)
         topBar.addView(View(this), LinearLayout.LayoutParams(0, 1, 1f))
         topBar.addView(batteryText)
-        root.addView(topBar, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(22)))
+        root.addView(topBar, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(24)))
 
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -308,19 +309,6 @@ class MainActivity : Activity() {
             FrameLayout.LayoutParams(dp(320), dp(320), Gravity.CENTER)
         )
 
-        // 齿轮放在整屏右下角（面板右下那块留白里），见 setContentView 前
-        settingsBtn = TextView(this).apply {
-            text = "⚙"
-            setTextColor(Color.WHITE)
-            textSize = 20f
-            gravity = Gravity.CENTER
-            background = GradientDrawable().apply {
-                shape = GradientDrawable.OVAL
-                setColor(0x4D000000)
-                setStroke(dp(1), 0x33FFFFFF)
-            }
-            setOnClickListener { openSettings() }
-        }
 
         status = TextView(this).apply {
             text = "ARRI 直出 · 就绪"
@@ -355,13 +343,18 @@ class MainActivity : Activity() {
 
         // 点取景器对焦
         preview.setOnTouchListener { v, e ->
-            if (e.action == android.view.MotionEvent.ACTION_UP) {
-                val uv = previewPointToUv(e.x, e.y)
-                if (uv != null && camera.focusMode != CameraEngine.Focus.MF) {
-                    camera.focusAt(uv.first, uv.second)
-                    showFocusRing(e.x, e.y)
-                    v.performClick()
+            when (e.actionMasked) {
+                android.view.MotionEvent.ACTION_UP -> {
+                    val uv = previewPointToUv(e.x, e.y)
+                    if (uv != null && camera.focusMode != CameraEngine.Focus.MF) {
+                        camera.focusAt(uv.first, uv.second)
+                        showFocusRing(e.x, e.y)
+                        v.performClick()
+                    } else if (uv == null) {
+                        status.text = "取景器还没就绪"
+                    }
                 }
+                android.view.MotionEvent.ACTION_DOWN -> v.performClick()
             }
             true
         }
@@ -542,7 +535,7 @@ class MainActivity : Activity() {
         }
         camCol.addView(
             meterBtn,
-            LinearLayout.LayoutParams(dp(66), dp(36)).apply { topMargin = dp(10) }
+            LinearLayout.LayoutParams(dp(66), dp(36)).apply { topMargin = dp(6) }
         )
 
         // 对焦模式：AF-S / AF-C / MF
@@ -560,7 +553,21 @@ class MainActivity : Activity() {
         }
         camCol.addView(
             focusBtn,
-            LinearLayout.LayoutParams(dp(66), dp(36)).apply { topMargin = dp(10) }
+            LinearLayout.LayoutParams(dp(66), dp(36)).apply { topMargin = dp(6) }
+        )
+
+        // 设置：和上面几个按钮同款胶囊，排在对焦模式下面
+        settingsBtn = TextView(this).apply {
+            text = "⚙"
+            setTextColor(Color.WHITE)
+            textSize = 17f
+            gravity = Gravity.CENTER
+            background = pill(0x33FFFFFF)
+            setOnClickListener { openSettings() }
+        }
+        camCol.addView(
+            settingsBtn,
+            LinearLayout.LayoutParams(dp(66), dp(36)).apply { topMargin = dp(6) }
         )
 
         // 画幅：3:2 / 16:9 / 2.35:1，循环切换
@@ -595,7 +602,7 @@ class MainActivity : Activity() {
             mfBtn,
             LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply { topMargin = dp(10) }
+            ).apply { topMargin = dp(6) }
         )
 
         zoomBtn = wheelButton("变焦", "1.0×", ZOOM)
@@ -607,7 +614,7 @@ class MainActivity : Activity() {
                 b,
                 LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
-                ).apply { topMargin = dp(10) }
+                ).apply { topMargin = dp(6) }
             )
         }
 
@@ -636,18 +643,7 @@ class MainActivity : Activity() {
 
         applyMode(CameraEngine.Mode.AUTO, force = true)
 
-        val container = FrameLayout(this)
-        container.addView(root, FrameLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT
-        ))
-        container.addView(
-            settingsBtn,
-            FrameLayout.LayoutParams(dp(40), dp(40), Gravity.BOTTOM or Gravity.END).apply {
-                rightMargin = dp(16)
-                bottomMargin = dp(14)
-            }
-        )
-        setContentView(container)
+        setContentView(root)
         hideSystemBars()
         startStatusTicker()
         waitForFirstFrame()
@@ -802,6 +798,16 @@ class MainActivity : Activity() {
         preview.requestRender()
     }
 
+    /** 设置页开着时，返回键先关设置页，不要直接退应用 */
+    @Suppress("DEPRECATION")
+    override fun onBackPressed() {
+        if (::settingsPanel.isInitialized && settingsPanel.visibility == View.VISIBLE) {
+            settingsPanel.visibility = View.GONE
+            return
+        }
+        super.onBackPressed()
+    }
+
     // ================= 设置页 =================
 
     private fun openSettings() {
@@ -933,9 +939,10 @@ class MainActivity : Activity() {
         if (qx <= 0f || qy <= 0f) return null
         val ndcX = (x / vw) * 2f - 1f
         val ndcY = 1f - (y / vh) * 2f
-        val ax = (ndcX - preview.quadOffsetX) / qx
-        val ay = ndcY / qy
-        if (Math.abs(ax) > 1f || Math.abs(ay) > 1f) return null   // 点在画面外
+        // 点在黑边上时钳到画面边缘，而不是直接丢弃——
+        // 16:9 / 2.35 下黑边很大，「点了没反应」多半是这里被 return null 了
+        val ax = ((ndcX - preview.quadOffsetX) / qx).coerceIn(-1f, 1f)
+        val ay = (ndcY / qy).coerceIn(-1f, 1f)
 
         val px = ax / 2f
         val py = ay / 2f

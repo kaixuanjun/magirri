@@ -97,6 +97,9 @@ class CameraEngine(private val context: Context) {
     /** AE 帧率区间（按 targetFps 选出来的） */
     private var fpsRange: android.util.Range<Int>? = null
 
+    /** AF 触发位：点一下置 START，对焦完成后复位 IDLE */
+    @Volatile private var afTrigger = CaptureRequest.CONTROL_AF_TRIGGER_IDLE
+
     /** 点击对焦的区域（sensor 坐标），null = 全画面 */
     private var afRegion: android.graphics.Rect? = null
 
@@ -144,6 +147,17 @@ class CameraEngine(private val context: Context) {
             request: CaptureRequest,
             result: android.hardware.camera2.TotalCaptureResult,
         ) {
+            // 一次 AF 扫描结束后把触发位复位，否则重复请求会一直重启对焦
+            if (afTrigger == CaptureRequest.CONTROL_AF_TRIGGER_START) {
+                val st = result.get(CaptureResult.CONTROL_AF_STATE)
+                if (st == CaptureResult.CONTROL_AF_STATE_FOCUSED_LOCKED ||
+                    st == CaptureResult.CONTROL_AF_STATE_NOT_FOCUSED_LOCKED ||
+                    st == CaptureResult.CONTROL_AF_STATE_INACTIVE
+                ) {
+                    afTrigger = CaptureRequest.CONTROL_AF_TRIGGER_IDLE
+                    reapply()
+                }
+            }
             result.get(CaptureResult.SENSOR_SENSITIVITY)?.let {
                 lastIso = it
                 sampledIso = it
@@ -360,8 +374,9 @@ class CameraEngine(private val context: Context) {
                         )
                     )
                 )
-                builder.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_IDLE)
             }
+            // 触发位跟着 afTrigger 走：置 START 的那一条请求会真正触发一次扫描
+            builder.set(CaptureRequest.CONTROL_AF_TRIGGER, afTrigger)
         }
         when (focusMode) {
             Focus.AF_S -> {
@@ -395,33 +410,22 @@ class CameraEngine(private val context: Context) {
     fun focusAt(u: Float, v: Float) {
         if (focusMode == Focus.MF) return
         val a = activeArray ?: return
-        val cam = device ?: return
-        val sess = session ?: return
-        val surf = previewSurface ?: return
+        if (session == null) return
 
         val cx = (u.coerceIn(0f, 1f) * a.width()).toInt() + a.left
         val cy = (v.coerceIn(0f, 1f) * a.height()).toInt() + a.top
         // 对焦框边长：短边的 12%
         val r = (Math.min(a.width(), a.height()) * 0.06f).toInt().coerceAtLeast(8)
-        val rect = android.graphics.Rect(
+        afRegion = android.graphics.Rect(
             (cx - r).coerceIn(a.left, a.right),
             (cy - r).coerceIn(a.top, a.bottom),
             (cx + r).coerceIn(a.left, a.right),
             (cy + r).coerceIn(a.top, a.bottom),
         )
-        afRegion = rect
-        try {
-            val builder = cam.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
-                addTarget(surf)
-                recordSurface?.let { addTarget(it) }
-                applyFocus(this)
-                applyZoomAndEv(this)
-                set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_START)
-            }
-            sess.capture(builder.build(), null, handler)
-        } catch (e: Exception) {
-            Log.w(TAG, "点击对焦失败: ${e.message}")
-        }
+        // 置 START 后由重复请求带下去；对焦结束在 aeSampler 里复位。
+        // 之前是「单次 capture 触发 + 立刻恢复重复请求」，那条重复请求经常把触发冲掉，
+        // 表现就是点十次对三次。
+        afTrigger = CaptureRequest.CONTROL_AF_TRIGGER_START
         reapply(immediate = true)
     }
 
