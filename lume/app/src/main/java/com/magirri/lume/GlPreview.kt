@@ -643,9 +643,9 @@ class GlPreview(
         // 旋转 UV 等于画面反向旋转，所以传负角度，画面才是顺时针转
         GLES20.glUniform1f(uRotation, rotationRad)
         GLES20.glUniform1f(uStrength, strength)
-        // 总变焦 = 相机 zoom × GL zoom；相机（可能换镜头）先吃掉一部分
-        val glZoom = (zoomNow / cameraZoom.coerceAtLeast(1f)).coerceAtLeast(1f)
-        GLES20.glUniform2f(uTexScale, cropX / glZoom, cropY / glZoom)
+        // 变焦只由相机做（CONTROL_ZOOM_RATIO）。两级变焦不可能同帧生效，
+        // 每次相机跳一下 GL 就要补一下，画面就是一闪一闪的。这里只做画幅裁切。
+        GLES20.glUniform2f(uTexScale, cropX, cropY)
         GLES20.glUniform2f(uQuadScale, qx, qy)
 
         quad.position(0)

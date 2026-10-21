@@ -635,22 +635,15 @@ class CameraEngine(private val context: Context) {
      * 一次跨好几个档会让 HAL 直接跳（还可能顺手换镜头），画面就"瞬间放大缩小"。
      * 真正生效的倍数不靠猜，而是从 CaptureResult 里读回来告诉 UI。
      */
+    /**
+     * 变焦：直接交给相机（`CONTROL_ZOOM_RATIO`）。相机端的 zoom 是连续的，
+     * 只要别一次跨太多档就不会跳；真正生效的倍数从 CaptureResult 读回来。
+     */
     fun setZoom(ratio: Float) {
-        pendingZoom = ratio.coerceIn(1f, controls.maxZoom)
-        stepZoom()
-    }
-
-    private fun stepZoom() {
-        val target = pendingZoom
-        val next = when {
-            target > zoom + 0.01f -> Math.min(target, zoom * 1.25f)
-            target < zoom - 0.01f -> Math.max(target, zoom / 1.25f)
-            else -> zoom
-        }
-        if (Math.abs(next - zoom) < 0.01f) return
-        zoom = next
+        val z = ratio.coerceIn(1f, controls.maxZoom)
+        if (Math.abs(z - zoom) < 0.01f) return
+        zoom = z
         reapply()
-        handler?.postDelayed({ if (Math.abs(pendingZoom - zoom) > 0.01f) stepZoom() }, 180)
     }
 
     /** 相机实际生效的变焦（含 HAL 内部换镜头造成的跳变） */

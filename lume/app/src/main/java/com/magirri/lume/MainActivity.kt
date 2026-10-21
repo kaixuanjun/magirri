@@ -289,10 +289,6 @@ class MainActivity : Activity() {
         camera.onPreviewSize = { size ->
             preview.cameraAspect = size.width.toFloat() / size.height
         }
-        camera.onAppliedZoom = { z ->
-            preview.cameraZoom = z
-            preview.requestRender()
-        }
         camera.onLensSwitched = {
             setupDials(camera.controls)
             applyFrameRatio()
@@ -386,7 +382,7 @@ class MainActivity : Activity() {
 
         row.addView(
             previewBox,
-            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 2.2f)
+            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 2.0f)
         )
 
         // ---------- 右：面板（左边一条细长波轮位，右边一列按钮） ----------
@@ -407,12 +403,9 @@ class MainActivity : Activity() {
                 // GL 立刻跟手，相机延后 260ms 再追 —— 相机那一步会让 HAL 去换镜头，
                 // 每帧都发会把管线打满（之前变焦卡顿就是这么来的）
                 zoomLevel = zoomFromValue(v)
-                preview.targetZoom = zoomLevel
-                preview.requestRender()
+                // 只走相机这一级：相机 zoom 连续，拨动多快就跟多快
+                camera.setZoom(zoomLevel)
                 updateWheelButtons()
-                // 停手 260ms 再把目标交给相机（分步追 + HAL 可能换镜头）
-                zoomTick.removeCallbacks(zoomTask)
-                zoomTick.postDelayed(zoomTask, 260)
             }
         }
         evDial = WheelView(this, "EV").apply {
@@ -547,9 +540,10 @@ class MainActivity : Activity() {
         modeBtn = TextView(this).apply {
             text = "AUTO"
             setTextColor(Color.WHITE)
-            textSize = 13f
             gravity = Gravity.CENTER
-            setPadding(dp(14), dp(8), dp(14), dp(8))
+            setAutoSizeTextTypeUniformWithConfiguration(
+                9, 13, 1, android.util.TypedValue.COMPLEX_UNIT_SP
+            )
             background = pill(0x33FFFFFF)
             setOnClickListener { cycleMode() }
         }
@@ -562,7 +556,9 @@ class MainActivity : Activity() {
         meterBtn = TextView(this).apply {
             text = METER_NAMES[1]
             setTextColor(Color.WHITE)
-            textSize = 12f
+            setAutoSizeTextTypeUniformWithConfiguration(
+                9, 12, 1, android.util.TypedValue.COMPLEX_UNIT_SP
+            )
             gravity = Gravity.CENTER
             setPadding(dp(14), dp(8), dp(14), dp(8))
             background = pill(0x33FFFFFF)
@@ -581,7 +577,9 @@ class MainActivity : Activity() {
         focusBtn = TextView(this).apply {
             text = FOCUS_NAMES[focusIndex]
             setTextColor(Color.WHITE)
-            textSize = 12f
+            setAutoSizeTextTypeUniformWithConfiguration(
+                9, 12, 1, android.util.TypedValue.COMPLEX_UNIT_SP
+            )
             gravity = Gravity.CENTER
             setPadding(dp(14), dp(8), dp(14), dp(8))
             background = pill(0x33FFFFFF)
@@ -707,9 +705,12 @@ class MainActivity : Activity() {
         TextView(this).apply {
             text = "$title $value"
             setTextColor(Color.WHITE)
-            textSize = 12f
             gravity = Gravity.CENTER
             isSingleLine = true          // 「对焦 21cm」这类长文案不折行
+            // 面板宽度随机型密度变化，字号自适应才不会把「快门 1/125」截断
+            setAutoSizeTextTypeUniformWithConfiguration(
+                8, 13, 1, android.util.TypedValue.COMPLEX_UNIT_SP
+            )
             setPadding(dp(10), dp(7), dp(10), dp(7))
             // 按钮自带灰色圆角胶囊；面板底是纯黑，两者区分开
             background = pill(0x2EFFFFFF)
@@ -1069,9 +1070,6 @@ class MainActivity : Activity() {
             }.start()
         }, 900)
     }
-
-    private val zoomTick = android.os.Handler(android.os.Looper.getMainLooper())
-    private val zoomTask = Runnable { camera.setZoom(zoomLevel) }
 
     /** 镜头按钮：显示当前镜头的相对倍率 */
     private fun updateLensButton() {
