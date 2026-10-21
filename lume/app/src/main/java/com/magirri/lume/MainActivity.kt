@@ -672,6 +672,8 @@ class MainActivity : Activity() {
         for ((i, b) in listOf(zoomBtn, evBtn, shutterBtn, isoBtn).withIndex()) {
             b.background = pill(if (i == openWheelKind) 0x59FFFFFF else 0x2EFFFFFF)
         }
+        // 对焦按钮也是波轮入口，展开时同样要高亮
+        mfBtn.background = pill(if (openWheelKind == MF) 0x59FFFFFF else 0x2EFFFFFF)
     }
 
     /** 等取景器真正出第一帧，再把启动 logo 淡出 */
