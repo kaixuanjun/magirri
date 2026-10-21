@@ -18,13 +18,14 @@ import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import java.util.concurrent.Executors
 
 /**
- * ArcCam：独立相机，直出 ARRI 色彩。
+ * MAGIRRI Lume：独立相机，直出 ARRI 色彩。
  *
  * 预览走 GL 实时查表；拍照走 YUV → CPU 查同一张 LUT → JPEG。
  * LUT 是 Magri 那条链把「荣耀还原」换成恒等后烘出来的，所以色彩响应和 Magri 一致。
@@ -46,6 +47,7 @@ class MainActivity : Activity() {
     private lateinit var meterBtn: TextView
 
     private lateinit var ratioBtn: TextView
+    private var splashLogo: ImageView? = null
 
     /** 当前画幅索引：0=3:2, 1=16:9, 2=2.35:1 */
 
@@ -242,6 +244,17 @@ class MainActivity : Activity() {
             }
         }
         previewBox.addView(preview)
+
+        // 相机出画之前先在取景位置放 logo：黑底白字，和黑取景区连成一片
+        splashLogo = ImageView(this).apply {
+            setImageResource(R.drawable.logo_splash)
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            setBackgroundColor(Color.BLACK)
+        }
+        previewBox.addView(
+            splashLogo,
+            FrameLayout.LayoutParams(dp(320), dp(320), Gravity.CENTER)
+        )
 
         status = TextView(this).apply {
             text = "ARRI 直出 · 就绪"
@@ -441,6 +454,7 @@ class MainActivity : Activity() {
             setPadding(dp(14), dp(8), dp(14), dp(8))
             background = pill(0x33FFFFFF)
             setOnClickListener {
+                if (recording) return@setOnClickListener   // 录制中不允许改画幅
                 ratioIndex = (ratioIndex + 1) % RATIOS.size
                 ratioBtn.text = RATIO_NAMES[ratioIndex]
                 applyFrameRatio()
@@ -492,6 +506,7 @@ class MainActivity : Activity() {
 
         applyMode(CameraEngine.Mode.AUTO, force = true)
         setContentView(root)
+        waitForFirstFrame()
     }
 
     /** 一个「数值按钮」：点开对应波轮（再点一次收起） */
@@ -551,6 +566,25 @@ class MainActivity : Activity() {
         for ((i, b) in listOf(zoomBtn, evBtn, shutterBtn, isoBtn).withIndex()) {
             b.background = pill(if (i == openWheelKind) 0x59FFFFFF else 0x2EFFFFFF)
         }
+    }
+
+    /** 等取景器真正出第一帧，再把启动 logo 淡出 */
+    private fun waitForFirstFrame() {
+        val start = System.currentTimeMillis()
+        val tick = object : Runnable {
+            override fun run() {
+                val drawn = preview.framesDrawn > 0
+                val timeout = System.currentTimeMillis() - start > 6000
+                if (drawn || timeout) {
+                    splashLogo?.animate()?.alpha(0f)?.setDuration(220)?.withEndAction {
+                        splashLogo?.visibility = View.GONE
+                    }?.start()
+                } else {
+                    ui.postDelayed(this, 80)
+                }
+            }
+        }
+        ui.postDelayed(tick, 80)
     }
 
     /**
@@ -843,12 +877,13 @@ class MainActivity : Activity() {
 
         val mark = GradientDrawable().apply {
             shape = GradientDrawable.RECTANGLE
-            cornerRadius = dp(5).toFloat()
+            cornerRadius = dp(5).toFloat()   // 圆角正方形
             setColor(Color.WHITE)
         }
+        // 圆角正方形（之前是长方形，看着像一条横杠）
         val whole = BUTTON_SIZE
-        val w = dp(22)
-        val h = dp(16)
+        val w = dp(20)
+        val h = dp(20)
         val inner = InsetDrawable(
             mark,
             (whole - w) / 2, (whole - h) / 2,
@@ -908,6 +943,9 @@ class MainActivity : Activity() {
         recording = true
         recordStart = android.os.SystemClock.elapsedRealtime()
         recordBtn.background = recordIcon(true)
+        // 录制中不能改画幅：编码尺寸已经定死了，改了会写出尺寸不一致的流
+        ratioBtn.isEnabled = false
+        ratioBtn.alpha = 0.3f
         status.text = "● 录制中 00:00"
         ui.post(ticker)
         // 编码器的 EGL 表面是在 GL 线程上建的，几百毫秒后才知道成没成；
@@ -926,6 +964,8 @@ class MainActivity : Activity() {
         recording = false
         ui.removeCallbacks(ticker)
         recordBtn.background = recordIcon(false)
+        ratioBtn.isEnabled = true
+        ratioBtn.alpha = 1f
         status.text = "正在保存录像…"
         // 顺序很重要：先让 GL 线程停止写编码器（并等它确认），再收编码器。
         // 之前直接 stop，GL 线程可能还在 swap，muxer 收到废数据 → 保存失败。
@@ -934,7 +974,7 @@ class MainActivity : Activity() {
             val uri = recorder.stop()
             ui.post {
                 status.text = if (uri != null) {
-                    "已保存录像到 相册/Movies/ArcCam"
+                    "已保存录像到 相册/Movies/MAGIRRI Lume"
                 } else {
                     "录像保存失败：${recorder.lastError ?: "未知原因"}"
                 }

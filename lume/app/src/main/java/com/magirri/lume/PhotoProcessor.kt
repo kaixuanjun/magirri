@@ -141,7 +141,7 @@ object PhotoProcessor {
             val values = ContentValues().apply {
                 put(MediaStore.Images.Media.DISPLAY_NAME, name)
                 put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
-                put(MediaStore.Images.Media.RELATIVE_PATH, "Pictures/ArcCam")
+                put(MediaStore.Images.Media.RELATIVE_PATH, "Pictures/MAGIRRI Lume")
                 put(MediaStore.Images.Media.IS_PENDING, 1)
             }
             val uri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
@@ -155,7 +155,7 @@ object PhotoProcessor {
         } else {
             val dir = File(
                 Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES),
-                "ArcCam"
+                "MAGIRRI Lume"
             ).apply { mkdirs() }
             val file = File(dir, name)
             file.outputStream().use {

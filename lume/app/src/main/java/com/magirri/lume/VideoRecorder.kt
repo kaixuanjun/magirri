@@ -323,7 +323,7 @@ class VideoRecorder(private val context: Context) {
             val values = ContentValues().apply {
                 put(MediaStore.Video.Media.DISPLAY_NAME, name)
                 put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
-                put(MediaStore.Video.Media.RELATIVE_PATH, "Movies/ArcCam")
+                put(MediaStore.Video.Media.RELATIVE_PATH, "Movies/MAGIRRI Lume")
                 put(MediaStore.Video.Media.IS_PENDING, 1)
             }
             val uri = resolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values)
@@ -336,7 +336,7 @@ class VideoRecorder(private val context: Context) {
         } else {
             val dir = File(
                 Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES),
-                "ArcCam"
+                "MAGIRRI Lume"
             ).apply { mkdirs() }
             val dst = File(dir, name)
             file.copyTo(dst, overwrite = true)

@@ -425,6 +425,7 @@ class GlPreview(
 
         // 1) 画到屏幕
         drawFrame(-rotationDeg * Math.PI.toFloat() / 180f, scaleX, scaleY, viewWidth, viewHeight)
+        framesDrawn++
         statFrames++
         statDrawNs += System.nanoTime() - tStart
 
@@ -450,7 +451,11 @@ class GlPreview(
                         -encRotation * Math.PI.toFloat() / 180f, 1f, 1f, encWidth, encHeight,
                         if (recordStreamActive) recTexId else texId,
                     )
-                    val pts = (now - encBaseNs).coerceAtLeast(0L)
+                    // pts 必须和 encBaseNs 同一个时钟域。相机给的 st.timestamp 是
+                    // CLOCK_BOOTTIME（含休眠），System.nanoTime() 是 CLOCK_MONOTONIC——
+                    // 手机睡过一晚两者能差几十小时，pts 直接变成天文数字，成片时长就成了
+                    // 几千分钟。改用 nanoTime 差值：既同域，也天然按真实时间走（丢帧也不变速）。
+                    val pts = (System.nanoTime() - encBaseNs).coerceAtLeast(0L)
                     EGLExt.eglPresentationTimeANDROID(d, es, pts)
                     val t0 = System.nanoTime()
                     // 编码器队列满时 swap 会阻塞，这里只能被动等；所以码率/分辨率要留余量
@@ -476,6 +481,10 @@ class GlPreview(
     // ---- 取景亮度：给 S 档的软件自动 ISO 用 ----
     @Volatile private var lumaWanted = false
     @Volatile var lastLuma = -1f
+        private set
+
+    /** 已经真正画出过多少帧：MainActivity 靠它决定什么时候撤掉启动 logo */
+    @Volatile var framesDrawn = 0L
         private set
 
     /** 请求下一帧顺带读一次亮度（便宜：只读中心 16x16） */

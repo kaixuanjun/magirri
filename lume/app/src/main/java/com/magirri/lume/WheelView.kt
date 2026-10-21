@@ -119,8 +119,10 @@ class WheelView(context: Context, caption: String) : View(context) {
         canvas.drawRect(rect, bodyPaint)
         bodyPaint.shader = null
 
-        // 纹路：横向棱，拨动时上下滚动
-        val offset = (value * ribTravel) % ribSpacing
+        // 纹路：横向棱，拨动时上下滚动。
+        // 方向要和手指一致：往上拨 → 值变大 → 纹路也往上跑。
+        // 之前是 +offset，值变大纹路反而往下走，看着和手指反向。
+        val offset = ribSpacing - ((value * ribTravel) % ribSpacing)
         var y = -ribSpacing + offset
         while (y < h + ribSpacing) {
             // 越靠上下端越淡，暗示轮子滚出视野
