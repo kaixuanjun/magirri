@@ -289,6 +289,10 @@ class MainActivity : Activity() {
         camera.onPreviewSize = { size ->
             preview.cameraAspect = size.width.toFloat() / size.height
         }
+        camera.onAppliedZoom = { z ->
+            preview.cameraZoom = z
+            preview.requestRender()
+        }
         camera.onLensSwitched = {
             setupDials(camera.controls)
             applyFrameRatio()
@@ -406,6 +410,9 @@ class MainActivity : Activity() {
                 preview.targetZoom = zoomLevel
                 preview.requestRender()
                 updateWheelButtons()
+                // 停手 260ms 再把目标交给相机（分步追 + HAL 可能换镜头）
+                zoomTick.removeCallbacks(zoomTask)
+                zoomTick.postDelayed(zoomTask, 260)
             }
         }
         evDial = WheelView(this, "EV").apply {
@@ -482,7 +489,8 @@ class MainActivity : Activity() {
             }
             setOnClickListener { takePhoto() }
         }
-        // 右栏：快门 → 录像 → 模式键，都贴右上角
+        // 右栏：最上面一行是 [齿轮 + 快门]（齿轮顶边与快门顶边对齐，位于快门左侧），
+        // 下面依次是录像、模式、测光、对焦、镜头
         val camCol = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.END
@@ -496,17 +504,7 @@ class MainActivity : Activity() {
             }
             setOnClickListener { takePhoto() }
         }
-        camCol.addView(
-            shutter,
-            LinearLayout.LayoutParams(BUTTON_SIZE, BUTTON_SIZE).apply { bottomMargin = dp(10) }
-        )
 
-        recordBtn = View(this).apply {
-            background = recordIcon(false)
-            setOnClickListener { toggleRecording() }
-        }
-
-        // 设置按钮挪到录像左边，跟录像同一行
         settingsBtn = TextView(this).apply {
             text = "⚙"
             setTextColor(Color.WHITE)
@@ -515,23 +513,35 @@ class MainActivity : Activity() {
             background = pill(0x33FFFFFF)
             setOnClickListener { openSettings() }
         }
-        val recordRow = LinearLayout(this).apply {
+
+        val shutterRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
+            gravity = Gravity.TOP
         }
-        recordRow.addView(
+        shutterRow.addView(
             settingsBtn,
-            LinearLayout.LayoutParams(dp(34), dp(34)).apply { rightMargin = dp(6) }
+            LinearLayout.LayoutParams(dp(34), dp(34)).apply {
+                rightMargin = dp(8)        // 顶边与快门顶边齐平（同一行 Gravity.TOP）
+            }
         )
-        recordRow.addView(
-            recordBtn,
+        shutterRow.addView(
+            shutter,
             LinearLayout.LayoutParams(BUTTON_SIZE, BUTTON_SIZE)
         )
         camCol.addView(
-            recordRow,
+            shutterRow,
             LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply { bottomMargin = dp(12) }
+            ).apply { bottomMargin = dp(10) }
+        )
+
+        recordBtn = View(this).apply {
+            background = recordIcon(false)
+            setOnClickListener { toggleRecording() }
+        }
+        camCol.addView(
+            recordBtn,
+            LinearLayout.LayoutParams(BUTTON_SIZE, BUTTON_SIZE).apply { bottomMargin = dp(12) }
         )
 
         modeBtn = TextView(this).apply {
@@ -658,7 +668,11 @@ class MainActivity : Activity() {
         rightCol.addView(
             valueCol,
             LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-                .apply { gravity = Gravity.CENTER_VERTICAL }
+                // 顶部空出一段，整块往下挪（配合齿轮/快门那一行的视觉重心）
+                .apply {
+                    gravity = Gravity.TOP
+                    topMargin = dp(96)
+                }
         )
         rightCol.addView(
             camCol,
@@ -1055,6 +1069,9 @@ class MainActivity : Activity() {
             }.start()
         }, 900)
     }
+
+    private val zoomTick = android.os.Handler(android.os.Looper.getMainLooper())
+    private val zoomTask = Runnable { camera.setZoom(zoomLevel) }
 
     /** 镜头按钮：显示当前镜头的相对倍率 */
     private fun updateLensButton() {

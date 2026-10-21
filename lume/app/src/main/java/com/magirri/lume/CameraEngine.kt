@@ -87,6 +87,7 @@ class CameraEngine(private val context: Context) {
     /** 当前变焦倍数（1.0 = 不裁） */
     var zoom = 1f
         private set
+    private var pendingZoom = 1f
 
     /** 录制分辨率偏好：0 = 4K，1 = 1080P，2 = 720P（下次开会话生效） */
     var recordPreference = 0
@@ -164,6 +165,22 @@ class CameraEngine(private val context: Context) {
             request: CaptureRequest,
             result: android.hardware.camera2.TotalCaptureResult,
         ) {
+            // 读回相机实际生效的变焦：GL 用它做补偿，才不会被"发了请求但还没生效"坑
+            val az = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                result.get(CaptureResult.CONTROL_ZOOM_RATIO) ?: 1f
+            } else {
+                val crop = result.get(CaptureResult.SCALER_CROP_REGION)
+                val full = activeArray
+                if (crop != null && full != null && crop.width() > 0) {
+                    full.width().toFloat() / crop.width()
+                } else 1f
+            }
+            if (Math.abs(az - appliedZoom) > 0.004f) {
+                appliedZoom = az
+                Log.i(TAG, "相机变焦生效 %.2fx（请求 %.2fx）".format(az, zoom))
+                onAppliedZoom?.invoke(az)
+            }
+
             // 一次 AF 扫描结束后把触发位复位，否则重复请求会一直重启对焦
             if (afTrigger == CaptureRequest.CONTROL_AF_TRIGGER_START) {
                 val st = result.get(CaptureResult.CONTROL_AF_STATE)
@@ -547,9 +564,8 @@ class CameraEngine(private val context: Context) {
             }
         }
 
-        // 变焦全部交给 GL（数字变焦）；相机端不动，避免"相机跳 + GL 补"互相打架
         if (!controls.hasZoom) return
-        val z = 1f
+        val z = zoom.coerceIn(1f, controls.maxZoom)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             builder.set(CaptureRequest.CONTROL_ZOOM_RATIO, z)
         } else {
@@ -614,12 +630,33 @@ class CameraEngine(private val context: Context) {
     }
 
     /** 拖动变焦滑条时调用 */
+    /**
+     * 变焦：目标值先记下来，再**分小步**追过去（每步最多 1.25×，间隔 180ms）。
+     * 一次跨好几个档会让 HAL 直接跳（还可能顺手换镜头），画面就"瞬间放大缩小"。
+     * 真正生效的倍数不靠猜，而是从 CaptureResult 里读回来告诉 UI。
+     */
     fun setZoom(ratio: Float) {
-        val z = ratio.coerceIn(1f, controls.maxZoom)
-        if (Math.abs(z - zoom) < 0.002f) return
-        zoom = z
-        reapply()
+        pendingZoom = ratio.coerceIn(1f, controls.maxZoom)
+        stepZoom()
     }
+
+    private fun stepZoom() {
+        val target = pendingZoom
+        val next = when {
+            target > zoom + 0.01f -> Math.min(target, zoom * 1.25f)
+            target < zoom - 0.01f -> Math.max(target, zoom / 1.25f)
+            else -> zoom
+        }
+        if (Math.abs(next - zoom) < 0.01f) return
+        zoom = next
+        reapply()
+        handler?.postDelayed({ if (Math.abs(pendingZoom - zoom) > 0.01f) stepZoom() }, 180)
+    }
+
+    /** 相机实际生效的变焦（含 HAL 内部换镜头造成的跳变） */
+    @Volatile var appliedZoom = 1f
+        private set
+    var onAppliedZoom: ((Float) -> Unit)? = null
 
     /** 拖动曝光滑条时调用（单位是 evStep 档） */
     fun setEv(index: Int) {
