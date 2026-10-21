@@ -88,6 +88,18 @@ class CameraEngine(private val context: Context) {
     var zoom = 1f
         private set
 
+    /** 录制分辨率偏好：0 = 4K，1 = 1080P，2 = 720P（下次开会话生效） */
+    var recordPreference = 0
+
+    /** 目标帧率（同时约束 AE 的帧率范围与编码器） */
+    var targetFps = 30
+
+    /** AE 帧率区间（按 targetFps 选出来的） */
+    private var fpsRange: android.util.Range<Int>? = null
+
+    /** 点击对焦的区域（sensor 坐标），null = 全画面 */
+    private var afRegion: android.graphics.Rect? = null
+
     /** 对焦模式与手动焦距（屈光度，0 = 无穷远） */
     var focusMode = Focus.AF_C
         private set
@@ -177,6 +189,13 @@ class CameraEngine(private val context: Context) {
         // 曝光补偿：范围以「档」为单位，步长单独给
         val evRange = chars.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_RANGE)
         val evStep = chars.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_STEP)?.toFloat() ?: 0f
+        // 帧率：从可用区间里挑上界等于目标帧率的，优先低端也等于目标（恒定帧率）
+        fpsRange = chars.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES)
+            ?.let { ranges ->
+                ranges.firstOrNull { it.upper == targetFps && it.lower == targetFps }
+                    ?: ranges.filter { it.upper == targetFps }.minByOrNull { it.lower }
+                    ?: ranges.minByOrNull { Math.abs(it.upper - targetFps) }
+            }
         // 手动对焦：LENS_INFO_MINIMUM_FOCUS_DISTANCE 是最近合焦距离（屈光度），
         // 0 表示固定焦点镜头（只能对无穷远）
         val focusMax = chars.get(CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE) ?: 0f
@@ -199,7 +218,7 @@ class CameraEngine(private val context: Context) {
             "控制能力 zoom=${controls.maxZoom} ev=${controls.evMin}..${controls.evMax} " +
                     "iso=${controls.isoMin}..${controls.isoMax} " +
                     "shutter=${controls.shutterMinNs}..${controls.shutterMaxNs}ns " +
-                    "focus=0..${controls.focusMaxDiopters}D"
+                    "focus=0..${controls.focusMaxDiopters}D fps=$fpsRange"
         )
 
         val previewSize = pickSize(
@@ -329,6 +348,21 @@ class CameraEngine(private val context: Context) {
 
     /** 对焦模式：AF-S 单次、AF-C 连续、MF 手动锁焦 */
     private fun applyFocus(builder: CaptureRequest.Builder) {
+        // 点击对焦落下的区域：AF-S / AF-C 都生效，MF 忽略
+        if (focusMode != Focus.MF) {
+            afRegion?.let {
+                builder.set(
+                    CaptureRequest.CONTROL_AF_REGIONS,
+                    arrayOf(
+                        android.hardware.camera2.params.MeteringRectangle(
+                            it,
+                            android.hardware.camera2.params.MeteringRectangle.METERING_WEIGHT_MAX
+                        )
+                    )
+                )
+                builder.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_IDLE)
+            }
+        }
         when (focusMode) {
             Focus.AF_S -> {
                 builder.set(
@@ -354,6 +388,43 @@ class CameraEngine(private val context: Context) {
         }
     }
 
+    /**
+     * 点击对焦：u/v 是相机纹理坐标（0..1），换算成 sensor 的 metering 矩形。
+     * 单次触发一次 AF 扫描，然后恢复重复请求。
+     */
+    fun focusAt(u: Float, v: Float) {
+        if (focusMode == Focus.MF) return
+        val a = activeArray ?: return
+        val cam = device ?: return
+        val sess = session ?: return
+        val surf = previewSurface ?: return
+
+        val cx = (u.coerceIn(0f, 1f) * a.width()).toInt() + a.left
+        val cy = (v.coerceIn(0f, 1f) * a.height()).toInt() + a.top
+        // 对焦框边长：短边的 12%
+        val r = (Math.min(a.width(), a.height()) * 0.06f).toInt().coerceAtLeast(8)
+        val rect = android.graphics.Rect(
+            (cx - r).coerceIn(a.left, a.right),
+            (cy - r).coerceIn(a.top, a.bottom),
+            (cx + r).coerceIn(a.left, a.right),
+            (cy + r).coerceIn(a.top, a.bottom),
+        )
+        afRegion = rect
+        try {
+            val builder = cam.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
+                addTarget(surf)
+                recordSurface?.let { addTarget(it) }
+                applyFocus(this)
+                applyZoomAndEv(this)
+                set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_START)
+            }
+            sess.capture(builder.build(), null, handler)
+        } catch (e: Exception) {
+            Log.w(TAG, "点击对焦失败: ${e.message}")
+        }
+        reapply(immediate = true)
+    }
+
     /** 切对焦模式 */
     fun setFocusMode(f: Focus) {
         if (f == focusMode) return
@@ -369,6 +440,8 @@ class CameraEngine(private val context: Context) {
 
     /** 把变焦 / 曝光（含 S/M 手动档）写进任意请求 */
     private fun applyZoomAndEv(builder: CaptureRequest.Builder) {
+        // 目标帧率：约束 AE 的帧率区间，曝光时间就不会超过 1/fps
+        fpsRange?.let { builder.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, it) }
         when (mode) {
             Mode.AUTO -> {
                 builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
@@ -567,7 +640,11 @@ class CameraEngine(private val context: Context) {
         if (!hasTexture) return null
         val sizes = map.getOutputSizes(SurfaceTexture::class.java)?.toList().orEmpty()
         if (sizes.isEmpty()) return null
-        val wanted = listOf(3840 to 2160, 1920 to 1080, 1280 to 720)
+        val wanted = when (recordPreference) {
+            2 -> listOf(1280 to 720, 1920 to 1080)
+            1 -> listOf(1920 to 1080, 1280 to 720)
+            else -> listOf(3840 to 2160, 1920 to 1080, 1280 to 720)
+        }
         for ((w, h) in wanted) {
             sizes.firstOrNull { it.width == w && it.height == h }?.let { return it }
         }

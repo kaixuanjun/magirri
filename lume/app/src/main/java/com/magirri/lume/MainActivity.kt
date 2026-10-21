@@ -53,6 +53,14 @@ class MainActivity : Activity() {
     private lateinit var focusWheel: WheelView
     private var focusIndex = 1          // 默认 AF-C
     private var focusDiopters = 0f
+    private lateinit var settingsBtn: TextView
+    private lateinit var settingsPanel: View
+    private lateinit var ratioValue: TextView
+    private lateinit var resValue: TextView
+    private lateinit var fpsValue: TextView
+    private lateinit var focusRing: View
+    private var resIndex = 0            // 0=4K 1=1080P 2=720P
+    private var fpsIndex = 1            // 0=24 1=30 2=60
 
     /** 当前画幅索引：0=3:2, 1=16:9, 2=2.35:1 */
 
@@ -264,11 +272,31 @@ class MainActivity : Activity() {
             FrameLayout.LayoutParams(dp(320), dp(320), Gravity.CENTER)
         )
 
+        settingsBtn = TextView(this).apply {
+            text = "设置"
+            setTextColor(Color.WHITE)
+            textSize = 12f
+            gravity = Gravity.CENTER
+            setPadding(dp(14), dp(8), dp(14), dp(8))
+            background = pill(0x4D000000)
+            setOnClickListener { openSettings() }
+        }
+        previewBox.addView(
+            settingsBtn,
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                gravity = Gravity.TOP or Gravity.START
+                topMargin = dp(12)
+                leftMargin = dp(12)
+            }
+        )
+
         status = TextView(this).apply {
             text = "ARRI 直出 · 就绪"
             setTextColor(0xCCFFFFFF.toInt())
             textSize = 12f
-            setPadding(dp(14), dp(8), dp(14), dp(8))
+            setPadding(dp(4), dp(8), dp(14), dp(8))
         }
         previewBox.addView(
             status,
@@ -277,9 +305,36 @@ class MainActivity : Activity() {
             ).apply {
                 gravity = Gravity.TOP or Gravity.START
                 topMargin = dp(12)
-                leftMargin = dp(10)
+                leftMargin = dp(84)
             }
         )
+
+        // 点击对焦的视觉反馈
+        focusRing = View(this).apply {
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(Color.TRANSPARENT)
+                setStroke(dp(2), 0xCCFFD400.toInt())
+            }
+            visibility = View.INVISIBLE
+        }
+        previewBox.addView(
+            focusRing,
+            FrameLayout.LayoutParams(dp(64), dp(64))
+        )
+
+        // 点取景器对焦
+        preview.setOnTouchListener { v, e ->
+            if (e.action == android.view.MotionEvent.ACTION_UP) {
+                val uv = previewPointToUv(e.x, e.y)
+                if (uv != null && camera.focusMode != CameraEngine.Focus.MF) {
+                    camera.focusAt(uv.first, uv.second)
+                    showFocusRing(e.x, e.y)
+                    v.performClick()
+                }
+            }
+            true
+        }
 
         perf = TextView(this).apply {
             text = "FPS --"
@@ -499,12 +554,8 @@ class MainActivity : Activity() {
                 applyFrameRatio()
             }
         }
-        camCol.addView(
-            ratioBtn,
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply { topMargin = dp(10) }
-        )
+        // 画幅挪到设置页里了，面板上不再显示
+        ratioBtn.visibility = View.GONE
 
         // 左栏：四个数值按钮，排在快门/录像左侧，竖向排列不超出屏幕
         val valueCol = LinearLayout(this).apply {
@@ -662,6 +713,176 @@ class MainActivity : Activity() {
         // 画面有效宽高比 = target，交给取景器做等比适配
         preview.cameraAspect = if (sideways) 1f / target else target
         preview.requestRender()
+    }
+
+    // ================= 设置页 =================
+
+    private fun openSettings() {
+        if (::settingsPanel.isInitialized && settingsPanel.visibility == View.VISIBLE) {
+            settingsPanel.visibility = View.GONE
+            settingsBtn.text = "设置"
+            return
+        }
+        if (!::settingsPanel.isInitialized) buildSettingsPanel()
+        settingsPanel.visibility = View.VISIBLE
+        settingsBtn.text = "关闭"
+        refreshSettings()
+    }
+
+    private fun refreshSettings() {
+        ratioValue.text = RATIO_NAMES[ratioIndex]
+        resValue.text = RES_NAMES[resIndex]
+        fpsValue.text = FPS_NAMES[fpsIndex]
+    }
+
+    private fun buildSettingsPanel() {
+        val overlay = FrameLayout(this).apply {
+            setBackgroundColor(0xF2000000.toInt())
+            isClickable = true
+            setOnClickListener { openSettings() }     // 点空白关闭
+        }
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(18), dp(16), dp(18), dp(18))
+            background = GradientDrawable().apply {
+                cornerRadius = dp(18).toFloat()
+                setColor(0xFF101010.toInt())
+                setStroke(dp(1), 0x33FFFFFF)
+            }
+            isClickable = true
+        }
+
+        box.addView(TextView(this).apply {
+            text = "设置"
+            setTextColor(Color.WHITE)
+            textSize = 16f
+            setPadding(dp(2), dp(2), dp(2), dp(12))
+        })
+
+        fun row(label: String): TextView {
+            val v = TextView(this).apply {
+                setTextColor(Color.WHITE)
+                textSize = 13f
+                gravity = Gravity.CENTER
+                setPadding(dp(16), dp(9), dp(16), dp(9))
+                background = pill(0x2EFFFFFF)
+            }
+            val line = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(0, dp(7), 0, dp(7))
+            }
+            line.addView(TextView(this).apply {
+                text = label
+                setTextColor(0xCCFFFFFF.toInt())
+                textSize = 13f
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            line.addView(v)
+            box.addView(line)
+            return v
+        }
+
+        ratioValue = row("画幅")
+        ratioValue.setOnClickListener {
+            ratioIndex = (ratioIndex + 1) % RATIOS.size
+            applyFrameRatio()
+            refreshSettings()
+        }
+
+        resValue = row("分辨率")
+        resValue.setOnClickListener {
+            resIndex = (resIndex + 1) % RES_NAMES.size
+            camera.recordPreference = resIndex
+            restartCamera()
+            refreshSettings()
+        }
+
+        fpsValue = row("帧率")
+        fpsValue.setOnClickListener {
+            fpsIndex = (fpsIndex + 1) % FPS_NAMES.size
+            camera.targetFps = FPS_VALUES[fpsIndex]
+            restartCamera()
+            refreshSettings()
+        }
+
+        box.addView(TextView(this).apply {
+            text = "分辨率 / 帧率改完会重启相机"
+            setTextColor(0x66FFFFFF)
+            textSize = 11f
+            setPadding(dp(2), dp(10), dp(2), 0)
+        })
+
+        overlay.addView(
+            box,
+            FrameLayout.LayoutParams(
+                dp(280),
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.CENTER
+            )
+        )
+        (window.decorView as FrameLayout).addView(
+            overlay,
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
+        )
+        settingsPanel = overlay
+    }
+
+    /** 改分辨率 / 帧率要重开会话 */
+    private fun restartCamera() {
+        ui.postDelayed({
+            camera.close()
+            preview.reemitSurfaces()
+        }, 120)
+    }
+
+    /** 屏幕坐标 → 相机纹理 UV（和着色器同一套变换的逆运算） */
+    private fun previewPointToUv(x: Float, y: Float): Pair<Float, Float>? {
+        val vw = preview.width.toFloat()
+        val vh = preview.height.toFloat()
+        if (vw <= 0f || vh <= 0f) return null
+        val qx = preview.quadScaleX
+        val qy = preview.quadScaleY
+        if (qx <= 0f || qy <= 0f) return null
+        val ndcX = (x / vw) * 2f - 1f
+        val ndcY = 1f - (y / vh) * 2f
+        val ax = (ndcX - preview.quadOffsetX) / qx
+        val ay = ndcY / qy
+        if (Math.abs(ax) > 1f || Math.abs(ay) > 1f) return null   // 点在画面外
+
+        val px = ax / 2f
+        val py = ay / 2f
+        val th = Math.toRadians(-preview.rotationDeg.toDouble())
+        val c = Math.cos(th).toFloat()
+        val sn = Math.sin(th).toFloat()
+        val rx = px * c - py * sn
+        val ry = px * sn + py * c
+        val z = preview.currentZoom.coerceAtLeast(1f)
+        val u = rx * (preview.frameCropX / z) + 0.5f
+        val v = ry * (preview.frameCropY / z) + 0.5f
+        if (u !in 0f..1f || v !in 0f..1f) return null
+        return u to v
+    }
+
+    /** 点完闪一下黄圈 */
+    private fun showFocusRing(x: Float, y: Float) {
+        val size = dp(64)
+        val lp = focusRing.layoutParams as FrameLayout.LayoutParams
+        lp.leftMargin = (x - size / 2).toInt()
+        lp.topMargin = (y - size / 2).toInt()
+        focusRing.layoutParams = lp
+        focusRing.visibility = View.VISIBLE
+        focusRing.alpha = 1f
+        focusRing.scaleX = 1.25f
+        focusRing.scaleY = 1.25f
+        focusRing.animate().scaleX(1f).scaleY(1f).setDuration(160).start()
+        ui.postDelayed({
+            focusRing.animate().alpha(0f).setDuration(320).withEndAction {
+                focusRing.visibility = View.INVISIBLE
+            }.start()
+        }, 900)
     }
 
     /** 切对焦模式：相机侧改 AF 模式，UI 侧决定要不要露出「对焦」按钮 */
@@ -1017,7 +1238,7 @@ class MainActivity : Activity() {
         w = (w / 2) * 2
         h = (h / 2) * 2
 
-        val surface = recorder.start(w, h, 30)
+        val surface = recorder.start(w, h, FPS_VALUES[fpsIndex])
         if (surface == null) {
             status.text = "录像启动失败（编码器不可用）"
             return
@@ -1173,6 +1394,11 @@ class MainActivity : Activity() {
             CameraEngine.Focus.MF,
         )
         private val FOCUS_NAMES = listOf("AF-S", "AF-C", "MF")
+
+        /** 设置页：分辨率与帧率 */
+        private val RES_NAMES = listOf("4K", "1080P", "720P")
+        private val FPS_NAMES = listOf("24", "30", "60")
+        private val FPS_VALUES = listOf(24, 30, 60)
 
 
 

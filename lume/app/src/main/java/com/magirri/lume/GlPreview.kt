@@ -36,6 +36,21 @@ class GlPreview(
 
     var onCameraSurfaceReady: ((preview: SurfaceTexture, record: SurfaceTexture) -> Unit)? = null
 
+    /** 改过分辨率/帧率后重启相机：把现有的 surface 再交一次，不用重建 GL 纹理 */
+    fun reemitSurfaces() {
+        val st = cameraTexture ?: return
+        val rec = recordTexture ?: return
+        post { onCameraSurfaceReady?.invoke(st, rec) }
+    }
+
+    // ---- 给点击对焦用的几何量（和着色器里那套一致） ----
+    val quadScaleX: Float get() = scaleX
+    val quadScaleY: Float get() = scaleY
+    val quadOffsetX: Float get() = if (rightAlign) (1f - scaleX) else 0f
+    val frameCropX: Float get() = cropX
+    val frameCropY: Float get() = cropY
+    val currentZoom: Float get() = zoomNow
+
     /** 传感器方向（预览按它旋转）；改了必须重算等比缩放，否则还是按旧角度出的条 */
     var rotationDeg = 90
         set(v) {
