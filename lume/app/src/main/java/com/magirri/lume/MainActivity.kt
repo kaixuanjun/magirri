@@ -1948,6 +1948,20 @@ class MainActivity : Activity() {
     private val servoChoreographer by lazy { android.view.Choreographer.getInstance() }
     private var servoFrame = 0
     private var servoLumaSeen = -1f
+    /** 取样那一刻的 ISO：管道有 3~4 帧延迟，用旧亮度直接纠偏会过冲 */
+    private var servoSampleIso = 0
+    /** 刚改过 ISO 之后要空转的帧数：等管道把新亮度送上来再判断，否则拿旧帧当现状 */
+    private var servoHoldFrames = 0
+    /** 上一次动作的方向 */
+    private var servoLastDir = 0f
+    /** 顶到极限时记下的亮度与当时的 EV：场景没变就不再空推（否则会一格一格爬） */
+    private var servoStuckLuma = -1f
+    private var servoStuckEv = 0f
+    /** 停住时的快门：用户自己拨了快门就说明场景/意图变了，要重新跟 */
+    private var servoStuckShutterNs = 0L
+    /** 同一方向连续推了多少拍、这一轮开始时的误差，用来判断"是不是推不动" */
+    private var servoSameDirSteps = 0
+    private var servoErrStart = 0f
     /** 已经收敛到场内：此时降低取样频率，省 GPU 同步开销 */
     private var servoConverged = false
     private var servoCallback: android.view.Choreographer.FrameCallback? = null
@@ -1977,31 +1991,98 @@ class MainActivity : Activity() {
         if (isoRampActive) return                      // 拨轮正在爬，别插一脚
 
         servoFrame++
-        // 收敛之后把取样降到 3Hz，省下 glReadPixels 的同步等待；
-        // 一旦误差又变大多半是换了场景，立刻回到 10Hz。
-        val period = if (servoConverged) 10 else 3
-        if (servoFrame % period == 0) preview.requestLuma()
+        if (servoHoldFrames > 0) {                     // 刚下发过 ISO，等两三帧再判断
+            servoHoldFrames--
+            return
+        }
 
-        val luma = preview.lastLuma
-        if (luma <= 0.02f || luma == servoLumaSeen) return
-        servoLumaSeen = luma
+        // 收敛 / 已经顶到极限时降频取样，省下 glReadPixels 的同步等待；
+        // 一旦误差又变大多半是换了场景，立刻回到 10Hz。
+        val idle = servoConverged || servoStuckLuma > 0f
+        val period = if (idle) 10 else 3
+        if (servoFrame % period == 0) {
+            servoSampleIso = camera.sModeIso      // 记住这一拍取样时的 ISO
+            preview.requestLuma()
+        }
+
+        val rawLuma = preview.lastLuma
+        if (rawLuma <= 0.02f || rawLuma == servoLumaSeen) return
+        servoLumaSeen = rawLuma
+
+        // 从"下发 ISO"到"读到亮度"隔着 3~4 帧：取样之后我们又改过 ISO，
+        // 直接拿旧亮度算误差就会重复纠偏 —— 过冲、再反过来纠，看着就是忽亮忽暗。
+        // 所以按 ISO 比例把旧亮度折算成当前帧应有的亮度（亮度与 ISO 成正比）。
+        val cur = camera.sModeIso
+        val luma = if (servoSampleIso > 0 && servoSampleIso != cur)
+            rawLuma * (cur.toDouble() / servoSampleIso.toDouble()).toFloat()
+        else rawLuma
 
         val ev = evFromValue(evDial.value)
+
+        // 已经确认"这个场景 + 当前快门/ISO 就只能到这个亮度"：
+        // 场景没变、EV 没动就不再推 —— 否则误差永远消不掉，ISO 会一格一格爬，
+        // 画面越爬越亮又带着轻微抽动，就是用户看到的忽亮忽暗。
+        if (servoStuckLuma > 0f) {
+            val moved = Math.abs(luma - servoStuckLuma)
+            val shutterSame = camera.manualShutterNs == servoStuckShutterNs
+            if (moved < 0.10f && Math.abs(ev - servoStuckEv) < 0.02f && shutterSame) return
+            servoStuckLuma = -1f                      // 场景变了，重新正常调节
+            servoConverged = false
+            servoSameDirSteps = 0
+        }
+
         val target = (0.45f * Math.pow(2.0, ev.toDouble())).toFloat().coerceIn(0.10f, 0.90f)
-        val err = (Math.log((target / luma).toDouble()) / Math.log(2.0)).toFloat()
-        if (Math.abs(err) < 0.04f) {
+        val err = (Math.log((target / luma).toDouble()) / Math.log(2.0))
+            .toFloat().coerceIn(-2.5f, 2.5f)
+        val absErr = Math.abs(err)
+
+        // 迟滞：进场死区 0.07 档，出场要 0.14 档 —— 取样本身有 ±0.05 档噪声
+        val deadband = if (servoConverged) 0.14f else 0.07f
+        if (absErr < deadband) {
             servoConverged = true
+            servoSameDirSteps = 0
             return
         }
         servoConverged = false
 
-        // 每帧只走误差的一部分，并且单帧不超过 0.08 档
-        val stepStops = (err * 0.6f).coerceIn(-0.12f, 0.12f)
-        val next = (camera.sModeIso * Math.pow(2.0, stepStops.toDouble()))
+        val dir = Math.signum(err)
+        if (dir != servoLastDir) {                     // 换方向 = 新的一轮
+            servoLastDir = dir
+            servoSameDirSteps = 0
+            servoErrStart = absErr
+        }
+
+        // 同一方向连推 6 拍，误差却一点没见小 —— 说明推不动了（到 ISO / 快门极限，
+        // 或者影调曲线肩部把亮度压住了）。用误差本身判断，比看单拍亮度响应稳得多：
+        // 单拍响应里噪声就有 ±0.05 档，容易误判。
+        if (servoSameDirSteps >= 6 && absErr > servoErrStart * 0.6f) {
+            servoStuckLuma = luma
+            servoStuckEv = ev
+            servoStuckShutterNs = camera.manualShutterNs
+            servoSameDirSteps = 0
+            Log.d(TAG, String.format(
+                "S 伺服：连推 6 拍误差没降（err %.2f→%.2f），这个场景就停在这里",
+                servoErrStart, absErr))
+            return
+        }
+
+        // 每拍只走误差的一部分，单拍不超过 0.15 档（约 11%），眼睛看不出跳变
+        val stepStops = (err * 0.55f).coerceIn(-0.15f, 0.15f)
+        val next = (cur * Math.pow(2.0, stepStops.toDouble()))
             .toInt().coerceIn(c.isoMin, c.isoMax)
-        if (next == camera.sModeIso) return
+        if (next == cur) {
+            // ISO 已经顶到机身极限，误差还在 —— 别再空转
+            servoStuckLuma = luma
+            servoStuckEv = ev
+            servoStuckShutterNs = camera.manualShutterNs
+            Log.d(TAG, String.format("S 伺服：ISO 到头（%d），误差 %.2f 不再跟", cur, err))
+            return
+        }
+        Log.d(TAG, String.format("S 伺服 iso %d→%d luma=%.3f err=%.2f", cur, next, luma, err))
         camera.setSModeIsoInstant(next)
         isoBtn.text = "ISO $next"
+        servoHoldFrames = 2
+        servoSameDirSteps++
     }
 
     private inner class MeterServo : Runnable {
