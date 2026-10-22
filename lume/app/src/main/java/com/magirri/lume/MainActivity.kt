@@ -1536,6 +1536,19 @@ class MainActivity : Activity() {
     private var isoSettleUntil = 0L
 
     /** S 档是否正处于"刚改完、等生效"的窗口 */
+    /** 刚因为快门给不出来而交回 AE 的时间，期间不再抢 */
+    private var sTakeoverBlockedUntil = 0L
+
+    /** S 档：AE 自己选的速度偏离用户设定超过 0.3 档（≈23%）才接管 */
+    private fun shouldTakeOver(ctl: CameraEngine.Controls, userShutter: Long): Boolean {
+        if (android.os.SystemClock.uptimeMillis() < sTakeoverBlockedUntil) return false
+        val ae = camera.aeShutterNs
+        if (userShutter <= 0L || ae <= 0L) return false
+        if (ae !in ctl.shutterMinNs..ctl.shutterMaxNs) return false
+        val stops = Math.abs(Math.log(ae.toDouble() / userShutter) / Math.log(2.0))
+        return stops > 0.3
+    }
+
     private fun isSettling(): Boolean = android.os.SystemClock.uptimeMillis() < isoSettleUntil
 
     /**
@@ -1550,20 +1563,20 @@ class MainActivity : Activity() {
         if (!c.hasManual || luma <= 0.02f) return
         if (camera.aeLocked) return
         val now = android.os.SystemClock.uptimeMillis()
-        if (!force && now - lastIsoAdjustAt < 320L) return
+        if (!force && now - lastIsoAdjustAt < 500L) return
         if (!force && isSettling()) return
 
         val ev = evFromValue(evDial.value)
         val target = (0.45f * Math.pow(2.0, ev.toDouble())).toFloat().coerceIn(0.10f, 0.90f)
         val err = (Math.log((target / luma).toDouble()) / Math.log(2.0)).toFloat()
-        if (Math.abs(err) < 0.20f) return                      // 死区 0.2 档，避免来回微调
+        if (Math.abs(err) < 0.35f) return                      // 接管后才用的兜底：死区 0.35 档，避免来回微调
 
         val next = (camera.sModeIso * Math.pow(2.0, err.toDouble()))
             .toInt().coerceIn(c.isoMin, c.isoMax)
         if (next == camera.sModeIso) return
         camera.setSModeIso(next)
         lastIsoAdjustAt = now
-        isoSettleUntil = now + 320L          // 给 ISO 生效留时间
+        isoSettleUntil = now + 400L          // 给 ISO 生效留时间
         // 只刷新 ISO 这一个按钮：updateWheelButtons() 会重设四个自适应字号文本，
         // 触发四次重新测量，每秒几次就够把画面拖卡了
         isoBtn.text = "ISO " + next
@@ -1583,6 +1596,18 @@ class MainActivity : Activity() {
             // 每秒好几次会把 GL 线程拖出可见的卡顿），也不改参数
             if (isSettling()) {
                 ui.postDelayed(this, 160)
+                return
+            }
+            // S 档由 AE 负责时完全不用读回，省掉 glReadPixels 的同步开销
+            if (camera.mode == CameraEngine.Mode.S && !camera.sManualTakeover) {
+                preview.lastLuma                                   // 沿用上一帧的值
+                val ctl = camera.controls
+                val userShutter = camera.manualShutterNs
+                if (shouldTakeOver(ctl, userShutter)) {
+                    camera.enterSManual()
+                    updateWheelButtons()
+                }
+                ui.postDelayed(this, 250)
                 return
             }
             preview.requestLuma()
@@ -1628,7 +1653,27 @@ class MainActivity : Activity() {
                     lastLumaSeen = luma
                 }
 
-                CameraEngine.Mode.S -> adjustSIfNeeded(luma, force = false)
+                CameraEngine.Mode.S -> {
+                    val ctl = camera.controls
+                    val userShutter = camera.manualShutterNs
+                    if (!camera.sManualTakeover) {
+                        // AE 在管：AE 自己选的速度和用户设定差超过 0.3 档（≈23%）才接管
+                        if (shouldTakeOver(ctl, userShutter)) {
+                            camera.enterSManual()
+                            updateWheelButtons()
+                        }
+                    } else {
+                        // 接管中：明显偏了才纠正；场景变亮到 ISO 触底就交回 AE
+                        adjustSIfNeeded(luma, force = false)
+                        if (camera.manualIso <= ctl.isoMin + 1 && luma > 0.55f) {
+                            // ISO 已经到底还不够暗，说明这个快门在这台机器上给不出来：
+                            // 交回 AE，并锁 3 秒不要再抢，避免来回横跳
+                            camera.exitSManual()
+                            sTakeoverBlockedUntil = android.os.SystemClock.uptimeMillis() + 3000
+                            updateWheelButtons()
+                        }
+                    }
+                }
 
                 CameraEngine.Mode.M -> {
                     val dev = (Math.log(luma / 0.45) / Math.log(2.0)).toFloat().coerceIn(-2f, 2f)
