@@ -121,11 +121,15 @@ class GlPreview(
 
     private var uQuadOffset = 0
     private var uStrength = 0
+    private var uExposure = 0
     private var uZebra = 0
     private var uPeaking = 0
     private var uTexel = 0
 
     /** 辅助显示开关（由 UI 设置） */
+    /** 显示端曝光补偿：传感器 ISO 跳变时用来把画面亮度接上，再缓动回 1.0 */
+    @Volatile var exposureComp = 1f
+
     @Volatile var zebraOn = false
     @Volatile var peakingOn = false
 
@@ -210,6 +214,7 @@ class GlPreview(
 
         uQuadOffset = GLES20.glGetUniformLocation(program, "uQuadOffset")
         uStrength = GLES20.glGetUniformLocation(program, "uStrength")
+        uExposure = GLES20.glGetUniformLocation(program, "uExposure")
         uZebra = GLES20.glGetUniformLocation(program, "uZebra")
         uPeaking = GLES20.glGetUniformLocation(program, "uPeaking")
         uTexel = GLES20.glGetUniformLocation(program, "uTexel")
@@ -686,6 +691,7 @@ class GlPreview(
         // 旋转 UV 等于画面反向旋转，所以传负角度，画面才是顺时针转
         GLES20.glUniform1f(uRotation, rotationRad)
         GLES20.glUniform1f(uStrength, strength)
+        GLES20.glUniform1f(uExposure, exposureComp)
         GLES20.glUniform1i(uZebra, if (assist && zebraOn) 1 else 0)
         GLES20.glUniform1i(uPeaking, if (assist && peakingOn) 1 else 0)
         GLES20.glUniform2f(uTexel, 1f / 1280f, 1f / 720f)
@@ -770,6 +776,7 @@ class GlPreview(
             uniform sampler2D uLut;
             uniform float uLutSize;
             uniform float uStrength;
+            uniform float uExposure;
             uniform int uZebra;
             uniform int uPeaking;
             uniform vec2 uTexel;
@@ -822,6 +829,9 @@ class GlPreview(
                     }
                 }
 
+                // 曝光过渡：传感器 ISO 一步跳变时，这里从"抵消值"缓动回 1.0，
+                // 画面亮度就是连续的
+                col *= uExposure;
                 gl_FragColor = vec4(col, 1.0);
             }
         """

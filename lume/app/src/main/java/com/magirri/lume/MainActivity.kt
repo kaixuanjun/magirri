@@ -439,7 +439,7 @@ class MainActivity : Activity() {
                     val ev = evFromValue(v)
                     val d = Math.pow(2.0, (ev - lastEv).toDouble())
                     if (d.isFinite() && d > 0) {
-                        camera.setSModeIso((camera.sModeIso * d).toInt())
+                        rampIsoTo((camera.sModeIso * d).toInt())
                     }
                     lastEv = ev
                 }
@@ -456,8 +456,7 @@ class MainActivity : Activity() {
                     // S 档：曝光 ∝ ISO × 快门，所以快门变多少、ISO 就反比补多少。
                     // 这样是**瞬间守恒**，不用等测光闭环一档一档爬——之前画面亮度要慢慢挪，
                     // 看着就是卡。
-                    val iso = (camera.sModeIso * (oldNs.toDouble() / newNs)).toInt()
-                    camera.setSModeIso(iso)
+                    rampIsoTo((camera.sModeIso * (oldNs.toDouble() / newNs)).toInt())
                 }
                 camera.setShutterNs(newNs)
                 updateWheelButtons()
@@ -1524,7 +1523,56 @@ class MainActivity : Activity() {
         updateWheelButtons()
     }
 
-    // ---- S 档曝光 ----
+    // ---- ISO 平滑爬升 ----
+    private var isoRampToken = 0
+    /** 爬升进行中：期间不再评估新目标，否则会反复重启，变成一点一点挪 */
+    private var isoRampActive = false
+
+    /**
+     * 把 S 档 ISO 从当前值**平滑爬**到目标值。
+     *
+     * 相机自己的 AE 之所以丝滑，就是因为它每帧都在微调曝光 —— 每帧只差一点点，
+     * 眼睛看到的就是连续渐变。所以这里照做：40ms 一小步、指数插值、约 300ms 走完，
+     * 每一步只差百分之几，过程中**不读回亮度**（读回才是卡顿来源）。
+     *
+     * 请求合并（reapply 60ms 合并）会自动把节流控制在 ~16 次/秒，不会把 HAL 打爆。
+     */
+    private fun rampIsoTo(target: Int) {
+        val c = camera.controls
+        val to = target.coerceIn(c.isoMin, c.isoMax)
+        val from = camera.sModeIso
+        if (to == from) return
+
+        val token = ++isoRampToken
+        isoRampActive = true
+        val steps = 8                      // 8 步 × 40ms ≈ 320ms
+        var i = 0
+
+        fun step() {
+            if (token != isoRampToken) return        // 被新的目标打断
+            i++
+            val t = i.toFloat() / steps
+            val v = (from * Math.pow(to.toDouble() / from, t.toDouble())).toInt()
+                .coerceIn(c.isoMin, c.isoMax)
+            if (v != camera.sModeIso) {
+                camera.setSModeIso(v)
+                isoBtn.text = "ISO " + v
+            }
+            if (i < steps) {
+                ui.postDelayed({ step() }, 40L)
+            } else {
+                if (camera.sModeIso != to) {
+                    camera.setSModeIso(to)
+                    isoBtn.text = "ISO $to"
+                }
+                isoRampActive = false
+                sApplyAt = android.os.SystemClock.uptimeMillis()   // 爬完再等它生效
+            }
+        }
+        ui.postDelayed({ step() }, 40L)
+    }
+
+    // ---- S 档曝光 ----    // ---- S 档曝光 ----
     private var sWantLuma = false
     private var sApplyAt = 0L
     /** 两次"评估"之间的最小间隔：改得太勤会让相机反复重设请求，画面就顿 */
@@ -1546,6 +1594,7 @@ class MainActivity : Activity() {
     private fun sExposureTick() {
         val c = camera.controls
         if (!c.hasManual || camera.aeLocked) return
+        if (isoRampActive) return                  // 正在爬升，别插一脚
         val now = android.os.SystemClock.uptimeMillis()
         if (now - sApplyAt < 250L) return          // 等上一次改完生效
 
@@ -1568,9 +1617,8 @@ class MainActivity : Activity() {
             .toInt().coerceIn(c.isoMin, c.isoMax)
         val delta = Math.abs(next - camera.sModeIso).toDouble() / camera.sModeIso.coerceAtLeast(1)
         if (delta < 0.08) return                   // 太小就别改，省一次请求重设
-        camera.setSModeIso(next)
+        rampIsoTo(next)
         sApplyAt = now
-        isoBtn.text = "ISO " + next
     }
 
     private inner class MeterServo : Runnable {
