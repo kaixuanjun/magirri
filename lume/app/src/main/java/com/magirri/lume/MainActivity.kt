@@ -1530,34 +1530,43 @@ class MainActivity : Activity() {
      * 每 600ms 取一次取景器中心亮度，只在明显偏离目标时才动，每步最多 1/3 档：
      * 之前 300ms 无条件重算，ISO 在相邻档之间来回跳，画面就是一顿一顿的。
      */
-    /** 上一次调 ISO 的时间：改完要等它就绪，别连着改，否则来回过冲就是"忽亮忽暗" */
+    /** 上一次调 ISO 的时间 */
     private var lastIsoAdjustAt = 0L
+    /** 改完之后给它留的生效窗口，窗口内不读亮度也不改参数 */
+    private var isoSettleUntil = 0L
+
+    /** S 档是否正处于"刚改完、等生效"的窗口 */
+    private fun isSettling(): Boolean = android.os.SystemClock.uptimeMillis() < isoSettleUntil
 
     /**
      * S 档唯一的 ISO 调整入口。
      *
-     * 之前有三处同时在调 ISO（曝光轮询、实时闭环、点击补枪），增益还各不相同，
-     * 互相打架 → 画面忽亮忽暗。现在只留这一个函数。
+     * 之前是"每次最多走 0.6 档"，从差 2 档要爬 4 拍，每拍还要等 260ms —— 合计一秒多，
+     * 而且每拍都改一次重复请求，画面明显一顿一顿。现在改成**比例控制一次到位**：
+     * 直接算出目标 ISO（iso × 2^err），改完就等它生效，只在真的还差才补第二枪。
      */
     private fun adjustSIfNeeded(luma: Float, force: Boolean) {
         val c = camera.controls
         if (!c.hasManual || luma <= 0.02f) return
         if (camera.aeLocked) return
         val now = android.os.SystemClock.uptimeMillis()
-        // 上一次改完至少等 260ms 再改（ISO 生效要几帧，抢着改必然过冲）
-        if (!force && now - lastIsoAdjustAt < 260L) return
+        if (!force && now - lastIsoAdjustAt < 320L) return
+        if (!force && isSettling()) return
 
         val ev = evFromValue(evDial.value)
         val target = (0.45f * Math.pow(2.0, ev.toDouble())).toFloat().coerceIn(0.10f, 0.90f)
         val err = (Math.log((target / luma).toDouble()) / Math.log(2.0)).toFloat()
-        if (Math.abs(err) < 0.12f) return                      // 死区 0.12 档
-        val step = err.coerceIn(-0.6f, 0.6f)                   // 单次最多 0.6 档
-        val next = (camera.sModeIso * Math.pow(2.0, step.toDouble()))
+        if (Math.abs(err) < 0.20f) return                      // 死区 0.2 档，避免来回微调
+
+        val next = (camera.sModeIso * Math.pow(2.0, err.toDouble()))
             .toInt().coerceIn(c.isoMin, c.isoMax)
         if (next == camera.sModeIso) return
         camera.setSModeIso(next)
         lastIsoAdjustAt = now
-        updateWheelButtons()
+        isoSettleUntil = now + 320L          // 给 ISO 生效留时间
+        // 只刷新 ISO 这一个按钮：updateWheelButtons() 会重设四个自适应字号文本，
+        // 触发四次重新测量，每秒几次就够把画面拖卡了
+        isoBtn.text = "ISO " + next
     }
 
     private inner class MeterServo : Runnable {
@@ -1567,6 +1576,12 @@ class MainActivity : Activity() {
 
         override fun run() {
             if (wheels.any { it.isDragging }) {          // 用户正在拨轮，别抢
+                ui.postDelayed(this, 160)
+                return
+            }
+            // 刚改完 ISO，画面还没稳定：这拍不读亮度（glReadPixels 是同步读回，
+            // 每秒好几次会把 GL 线程拖出可见的卡顿），也不改参数
+            if (isSettling()) {
                 ui.postDelayed(this, 160)
                 return
             }
@@ -1620,7 +1635,7 @@ class MainActivity : Activity() {
                     evDial.value = ((dev + 2f) / 4f).coerceIn(0f, 1f)
                 }
             }
-            ui.postDelayed(this, 110)
+            ui.postDelayed(this, if (camera.mode == CameraEngine.Mode.S) 200L else 260L)
         }
     }
 
