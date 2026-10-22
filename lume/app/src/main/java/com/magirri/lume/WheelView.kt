@@ -24,7 +24,8 @@ class WheelView(context: Context, caption: String) : View(context) {
     /** 0..1 */
     var value = 0f
         set(v) {
-            field = v.coerceIn(0f, 1f)
+            // NaN 会一路传到 Canvas.translate，某些机型直接崩；先当 0 处理
+        field = if (v.isNaN()) 0f else v.coerceIn(0f, 1f)
             invalidate()
         }
 

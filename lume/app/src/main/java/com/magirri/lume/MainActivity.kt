@@ -168,6 +168,7 @@ class MainActivity : Activity() {
         @Suppress("DEPRECATION")
         window.decorView.systemUiVisibility = immersiveFlags()
         lut = Lut3D.parse(assets.open("luts/filmic_standard.cube").bufferedReader().use { it.readText() })
+        installCrashLogger()
         camera = CameraEngine(this)
         recorder = VideoRecorder(this)
         // 先按系统显示方向初始化，传感器第一个事件到来后再校正——避免旋转重建后闪一下
@@ -201,7 +202,10 @@ class MainActivity : Activity() {
     /** 变焦上限：相机硬件上限 ×2（最多 30×），超出去的那段由 GL 裁切补 */
     private fun zoomUiMax(): Float {
         val hw = camera.controls.maxZoom.coerceAtLeast(1f)
-        return (hw * 2f).coerceIn(hw, 30f)
+        // 注意：coerceIn(min, max) 在 min > max 时会抛异常，所以这里先算好上限再夹
+        val cap = maxOf(hw, 30f)
+        val want = hw * 2f
+        return if (want.isFinite()) minOf(want, cap).coerceAtLeast(hw) else hw
     }
 
     /** 0..1 → 1..上限，取对数：低倍率段手感更细 */
@@ -241,43 +245,50 @@ class MainActivity : Activity() {
     private fun shutterNsFromValue(v: Float): Long {
         val fast = shutterFastestNs().toDouble()
         val slow = shutterSlowestNs().toDouble()
+        if (slow <= 0.0 || fast <= 0.0) return camera.controls.shutterMinNs
+        if (fast >= slow) return slow.toLong()          // 机身范围退化，别算出 NaN
         return (slow * Math.pow(fast / slow, v.toDouble())).toLong()
     }
 
     private fun shutterValueFromNs(ns: Long): Float {
         val fast = shutterFastestNs().toDouble()
         val slow = shutterSlowestNs().toDouble()
-        if (ns <= 0) return 0f
+        if (ns <= 0 || slow <= 0.0 || fast <= 0.0 || fast >= slow) return 0f
         val v = Math.log(ns / slow) / Math.log(fast / slow)
-        return v.toFloat().coerceIn(0f, 1f)
+        return if (v.isNaN()) 0f else v.toFloat().coerceIn(0f, 1f)
     }
 
     /** ISO 上限：传感器上限 ×2（最多 25600），超出的部分用数字增益补 */
     private fun isoUiMax(): Int {
-        val hw = camera.controls.isoMax
-        return (hw * 2).coerceIn(hw, 25_600)
+        val hw = camera.controls.isoMax.coerceAtLeast(1)
+        val want = hw.toLong() * 2L
+        return minOf(want, maxOf(hw.toLong(), 25_600L)).toInt().coerceAtLeast(hw)
     }
 
     /** 0..1 → ISO（对数刻度） */
     private fun isoFromValue(v: Float): Int {
         val c = camera.controls
         val lo = c.isoMin.toDouble().coerceAtLeast(1.0)
-        val hi = isoUiMax().toDouble().coerceAtLeast(lo + 1)
-        return (lo * Math.pow(hi / lo, v.toDouble())).toInt().coerceIn(c.isoMin, isoUiMax())
+        val top = maxOf(isoUiMax(), c.isoMin + 1)      // 区间必须非空，否则 coerceIn 抛异常
+        val hi = top.toDouble().coerceAtLeast(lo + 1)
+        return (lo * Math.pow(hi / lo, v.toDouble())).toInt().coerceIn(c.isoMin, top)
     }
 
     private fun isoValueFromIso(iso: Int): Float {
         val c = camera.controls
         val lo = c.isoMin.toDouble().coerceAtLeast(1.0)
         val hi = isoUiMax().toDouble().coerceAtLeast(lo + 1)
-        if (iso <= 0) return 0f
-        return (Math.log(iso / lo) / Math.log(hi / lo)).toFloat().coerceIn(0f, 1f)
+        if (iso <= 0 || hi <= lo) return 0f
+        val v = Math.log(iso / lo) / Math.log(hi / lo)
+        return if (v.isNaN()) 0f else v.toFloat().coerceIn(0f, 1f)
     }
 
     /** 写 ISO：传感器吃得下的给相机，超出的部分交给 GL 增益 */
     private fun applyIso(iso: Int) {
         val c = camera.controls
-        val hwIso = iso.coerceIn(c.isoMin, c.isoMax)
+        val lo = minOf(c.isoMin, c.isoMax)
+        val hi = maxOf(c.isoMin, c.isoMax)
+        val hwIso = iso.coerceIn(lo, hi)
         manualIsoUi = iso
         camera.setIso(hwIso)
         preview.digitalGain = if (hwIso > 0) (iso.toFloat() / hwIso).coerceIn(1f, 16f) else 1f
@@ -291,6 +302,31 @@ class MainActivity : Activity() {
             String.format("%.1fs", ns / 1_000_000_000.0)
         } else {
             "1/" + Math.round(1_000_000_000.0 / ns)
+        }
+    }
+
+    /** 读 files/crash_last.txt 里第一条异常行（类名 + message） */
+    private fun readLastCrash(): String? = try {
+        val f = java.io.File(filesDir, "crash_last.txt")
+        if (!f.exists()) null
+        else f.readLines().firstOrNull { it.contains("Exception") || it.contains("Error") }
+            ?.trim()?.take(140)
+    } catch (t: Throwable) {
+        null
+    }
+
+    /** 崩溃时把堆栈落到 filesDir/crash_last.txt，logcat 里也打一份（tag arccam） */
+    private fun installCrashLogger() {
+        val prev = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { t, e ->
+            try {
+                val s = android.util.Log.getStackTraceString(e)
+                Log.e(TAG, "崩溃 ${e.javaClass.name}: ${e.message}\n$s")
+                java.io.File(filesDir, "crash_last.txt")
+                    .writeText("${System.currentTimeMillis()}\nthread=${t.name}\n$s")
+            } catch (ignored: Throwable) {
+            }
+            prev?.uncaughtException(t, e)
         }
     }
 
@@ -1409,6 +1445,16 @@ class MainActivity : Activity() {
             setPadding(0, dp(10), 0, 0)
         }
         aboutPage.addView(aboutCheckHint)
+
+        // 上一次崩溃的异常行（没有就不显示），截图这一行就能定位问题
+        readLastCrash()?.let { desc ->
+            aboutPage.addView(TextView(this).apply {
+                text = "上次崩溃：$desc"
+                setTextColor(0xFFFF8A80.toInt())
+                textSize = 10f
+                setPadding(0, dp(8), 0, 0)
+            })
+        }
 
         rightWrap.addView(aboutPage, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT
