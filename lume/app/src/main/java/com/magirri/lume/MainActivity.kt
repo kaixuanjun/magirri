@@ -1525,162 +1525,68 @@ class MainActivity : Activity() {
     }
 
     /**
-     * S 档的软件自动 ISO，兼 M 档的曝光指示。
-     *
-     * 每 600ms 取一次取景器中心亮度，只在明显偏离目标时才动，每步最多 1/3 档：
-     * 之前 300ms 无条件重算，ISO 在相邻档之间来回跳，画面就是一顿一顿的。
+     * S 档软件 ISO 微调 —— 就是改测光模式之前那套能用的逻辑：
+     * 每 800ms 看一次中心区亮度，误差超过 ±12% 才动，每次最多 1/3 档。
+     * 慢，但稳：不抢重复请求、不震荡、不卡。
      */
-    /** 上一次调 ISO 的时间 */
-    private var lastIsoAdjustAt = 0L
-    /** 改完之后给它留的生效窗口，窗口内不读亮度也不改参数 */
-    private var isoSettleUntil = 0L
-
-    /** S 档是否正处于"刚改完、等生效"的窗口 */
-    /** 刚因为快门给不出来而交回 AE 的时间，期间不再抢 */
-    private var sTakeoverBlockedUntil = 0L
-
-    /** S 档：AE 自己选的速度偏离用户设定超过 0.3 档（≈23%）才接管 */
-    private fun shouldTakeOver(ctl: CameraEngine.Controls, userShutter: Long): Boolean {
-        if (android.os.SystemClock.uptimeMillis() < sTakeoverBlockedUntil) return false
-        val ae = camera.aeShutterNs
-        if (userShutter <= 0L || ae <= 0L) return false
-        if (ae !in ctl.shutterMinNs..ctl.shutterMaxNs) return false
-        val stops = Math.abs(Math.log(ae.toDouble() / userShutter) / Math.log(2.0))
-        return stops > 0.3
-    }
-
-    private fun isSettling(): Boolean = android.os.SystemClock.uptimeMillis() < isoSettleUntil
-
-    /**
-     * S 档唯一的 ISO 调整入口。
-     *
-     * 之前是"每次最多走 0.6 档"，从差 2 档要爬 4 拍，每拍还要等 260ms —— 合计一秒多，
-     * 而且每拍都改一次重复请求，画面明显一顿一顿。现在改成**比例控制一次到位**：
-     * 直接算出目标 ISO（iso × 2^err），改完就等它生效，只在真的还差才补第二枪。
-     */
-    private fun adjustSIfNeeded(luma: Float, force: Boolean) {
+    private fun adjustSIfNeeded() {
         val c = camera.controls
-        if (!c.hasManual || luma <= 0.02f) return
-        if (camera.aeLocked) return
-        val now = android.os.SystemClock.uptimeMillis()
-        if (!force && now - lastIsoAdjustAt < 500L) return
-        if (!force && isSettling()) return
-
+        if (!c.hasManual || camera.aeLocked) return
+        preview.requestLuma()
+        val luma = preview.lastLuma
+        if (luma <= 0.02f) return
         val ev = evFromValue(evDial.value)
         val target = (0.45f * Math.pow(2.0, ev.toDouble())).toFloat().coerceIn(0.10f, 0.90f)
-        val err = (Math.log((target / luma).toDouble()) / Math.log(2.0)).toFloat()
-        if (Math.abs(err) < 0.35f) return                      // 接管后才用的兜底：死区 0.35 档，避免来回微调
-
-        val next = (camera.sModeIso * Math.pow(2.0, err.toDouble()))
-            .toInt().coerceIn(c.isoMin, c.isoMax)
-        if (next == camera.sModeIso) return
-        camera.setSModeIso(next)
-        lastIsoAdjustAt = now
-        isoSettleUntil = now + 400L          // 给 ISO 生效留时间
-        // 只刷新 ISO 这一个按钮：updateWheelButtons() 会重设四个自适应字号文本，
-        // 触发四次重新测量，每秒几次就够把画面拖卡了
-        isoBtn.text = "ISO " + next
+        val ratio = target / luma
+        if (ratio < 0.88f || ratio > 1.14f) {
+            val gain = Math.pow(ratio.toDouble(), 0.45).toFloat().coerceIn(0.8f, 1.25f)
+            val cur = camera.sModeIso
+            val next = (cur * gain).toInt().coerceIn(c.isoMin, c.isoMax)
+            if (next != cur) {
+                camera.setSModeIso(next)
+                updateWheelButtons()
+            }
+        }
     }
 
     private inner class MeterServo : Runnable {
-        private var lastLumaSeen = -1f
-        private var stall = 0
-        private var autoOffsetDead = false      // HAL 不理 EV 补偿时置位，避免把偏移推满
+        private var lastSAdjustAt = 0L
 
         override fun run() {
-            if (wheels.any { it.isDragging }) {          // 用户正在拨轮，别抢
-                ui.postDelayed(this, 160)
-                return
-            }
-            // 刚改完 ISO，画面还没稳定：这拍不读亮度（glReadPixels 是同步读回，
-            // 每秒好几次会把 GL 线程拖出可见的卡顿），也不改参数
-            if (isSettling()) {
-                ui.postDelayed(this, 160)
-                return
-            }
-            // S 档由 AE 负责时完全不用读回，省掉 glReadPixels 的同步开销
-            if (camera.mode == CameraEngine.Mode.S && !camera.sManualTakeover) {
-                preview.lastLuma                                   // 沿用上一帧的值
-                val ctl = camera.controls
-                val userShutter = camera.manualShutterNs
-                if (shouldTakeOver(ctl, userShutter)) {
-                    camera.enterSManual()
-                    updateWheelButtons()
-                }
+            if (wheels.any { it.isDragging }) {
                 ui.postDelayed(this, 250)
                 return
             }
-            preview.requestLuma()
-            val luma = preview.lastLuma
-            val c = camera.controls
-            if (luma <= 0.015f) {
-                ui.postDelayed(this, 160)
-                return
-            }
-            if (camera.aeLocked) {          // 用户锁了曝光：闭环不许动参数
-                ui.postDelayed(this, 200)
-                return
-            }
-            val ev = evFromValue(evDial.value)
-            val target = (0.45f * Math.pow(2.0, ev.toDouble())).toFloat().coerceIn(0.06f, 0.95f)
-            val err = (Math.log((target / luma).toDouble()) / Math.log(2.0)).toFloat()
-
             when (camera.mode) {
-                CameraEngine.Mode.AUTO -> {
-                    // 自动曝光交给相机自己的 AE
-                    if (autoOffsetDead) {
-                        ui.postDelayed(this, 200)
-                        return
-                    }
-                    if (Math.abs(err) > 0.08f) {
-                        // 绝对量修正：err 是在"当前偏移已生效"的前提下测出来的残差，
-                        // 所以直接加上去就行；但每拍限幅 0.3 档，避免大跳
-                        val step = err.coerceIn(-0.3f, 0.3f)
-                        val next = (camera.aeOffsetNow + step).coerceIn(-2.5f, 2.5f)
-                        camera.setAeOffset(next)
-
-                        // 无响应检测：上一拍也改了偏移、但画面亮度几乎没动 → HAL 不理
-                        val moved = Math.abs(luma - lastLumaSeen)
-                        stall = if (moved < 0.006f) stall + 1 else 0
-                        if (stall > 8) {
-                            // 画面不随补偿变化：静默退回，不打扰用户
-                            autoOffsetDead = true
-                            camera.setAeOffset(0f)
-                        }
-                    } else {
-                        stall = 0
-                    }
-                    lastLumaSeen = luma
-                }
-
+                // S 档：800ms 一次慢速微调（改造之前的做法）
                 CameraEngine.Mode.S -> {
-                    val ctl = camera.controls
-                    val userShutter = camera.manualShutterNs
-                    if (!camera.sManualTakeover) {
-                        // AE 在管：AE 自己选的速度和用户设定差超过 0.3 档（≈23%）才接管
-                        if (shouldTakeOver(ctl, userShutter)) {
-                            camera.enterSManual()
-                            updateWheelButtons()
-                        }
-                    } else {
-                        // 接管中：明显偏了才纠正；场景变亮到 ISO 触底就交回 AE
-                        adjustSIfNeeded(luma, force = false)
-                        if (camera.manualIso <= ctl.isoMin + 1 && luma > 0.55f) {
-                            // ISO 已经到底还不够暗，说明这个快门在这台机器上给不出来：
-                            // 交回 AE，并锁 3 秒不要再抢，避免来回横跳
-                            camera.exitSManual()
-                            sTakeoverBlockedUntil = android.os.SystemClock.uptimeMillis() + 3000
-                            updateWheelButtons()
-                        }
+                    val now = android.os.SystemClock.uptimeMillis()
+                    if (now - lastSAdjustAt >= 800L) {
+                        lastSAdjustAt = now
+                        adjustSIfNeeded()
                     }
+                    ui.postDelayed(this, 250)
+                    return
                 }
 
+                // M 档：只更新曝光指示器
                 CameraEngine.Mode.M -> {
-                    val dev = (Math.log(luma / 0.45) / Math.log(2.0)).toFloat().coerceIn(-2f, 2f)
-                    evDial.value = ((dev + 2f) / 4f).coerceIn(0f, 1f)
+                    preview.requestLuma()
+                    val luma = preview.lastLuma
+                    if (luma > 0.02f) {
+                        val dev = (Math.log(luma / 0.45) / Math.log(2.0)).toFloat().coerceIn(-2f, 2f)
+                        evDial.value = ((dev + 2f) / 4f).coerceIn(0f, 1f)
+                    }
+                    ui.postDelayed(this, 250)
+                    return
+                }
+
+                // AUTO 完全交给相机 AE
+                else -> {
+                    ui.postDelayed(this, 500)
+                    return
                 }
             }
-            ui.postDelayed(this, if (camera.mode == CameraEngine.Mode.S) 200L else 260L)
         }
     }
 
@@ -1690,7 +1596,6 @@ class MainActivity : Activity() {
     private inner class SpotMeterTask : Runnable {
         override fun run() {
             when (camera.mode) {
-                CameraEngine.Mode.S -> adjustSIfNeeded(preview.lastLuma, force = true)
                 CameraEngine.Mode.AUTO -> {
                     // 点击后立刻按新测光点推一次 AE 补偿
                     val luma = preview.lastLuma

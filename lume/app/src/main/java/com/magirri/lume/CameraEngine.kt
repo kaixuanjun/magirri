@@ -238,12 +238,10 @@ class CameraEngine(private val context: Context) {
             result.get(CaptureResult.SENSOR_SENSITIVITY)?.let {
                 lastIso = it
                 sampledIso = it
-                aeIso = it
             }
             result.get(CaptureResult.SENSOR_EXPOSURE_TIME)?.let {
                 lastShutterNs = it
                 sampledShutterNs = it
-                aeShutterNs = it
             }
         }
     }
@@ -528,41 +526,6 @@ class CameraEngine(private val context: Context) {
     }
     private var lastMeterRect = -1
 
-    /** S 档：相机 AE 当前给出的 ISO / 快门（AUTO 模式下一只在更新） */
-    @Volatile var aeIso = 400
-        private set
-    @Volatile var aeShutterNs = 1_000_000_000L / 60
-        private set
-
-    /**
-     * S 档工作方式，和 AUTO 一样优先用相机 AE：
-     *  - false（默认）：AE 全权负责，画面顺滑，只有 AE 选的速度比用户设定慢时
-     *    才由我们接管（见 enterSManual）
-     *  - true：固定用户设定的快门 + 手动 ISO
-     */
-    @Volatile var sManualTakeover = false
-        private set
-
-    /** S 档接管：按 AE 当前的 ISO 换算到用户设定的快门，曝光量保持不变 */
-    fun enterSManual() {
-        if (sManualTakeover) return
-        val target = manualShutterNs.coerceIn(controls.shutterMinNs, controls.shutterMaxNs)
-        val iso = (aeIso.toDouble() * aeShutterNs / target).toInt()
-            .coerceIn(controls.isoMin, controls.isoMax)
-        Log.i(TAG, "S 档接管：AE ${aeIso}/${aeShutterNs / 1000}us -> 固定 ${target / 1000}us ISO $iso")
-        manualIso = iso
-        sManualTakeover = true
-        reapply(immediate = true)
-    }
-
-    /** 交回相机 AE（亮起来之后） */
-    fun exitSManual() {
-        if (!sManualTakeover) return
-        Log.i(TAG, "S 档交回 AE")
-        sManualTakeover = false
-        reapply(immediate = true)
-    }
-
     /** 曝光锁定（AE-L） */
     @Volatile var aeLocked = false
 
@@ -741,29 +704,17 @@ class CameraEngine(private val context: Context) {
             }
 
             Mode.S -> {
+                // 快门优先：快门由拨盘定死，ISO 由软件按测光结果慢速微调
+                builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_OFF)
                 builder.set(
                     CaptureRequest.CONTROL_AE_ANTIBANDING_MODE,
                     CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_AUTO
                 )
-                if (!sManualTakeover) {
-                    // 默认和 AUTO 完全一样：交给相机 AE 连续调，画面才顺滑不卡
-                    builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
-                    builder.set(CaptureRequest.CONTROL_AE_LOCK, aeLocked)
-                    if (controls.hasEv) {
-                        builder.set(
-                            CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION,
-                            evIndex.coerceIn(controls.evMin, controls.evMax)
-                        )
-                    }
-                } else {
-                    // AE 给出的速度比用户设定更慢 → 接管：固定快门 + 手动 ISO
-                    builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_OFF)
-                    builder.set(CaptureRequest.SENSOR_EXPOSURE_TIME, manualShutterNs)
-                    builder.set(
-                        CaptureRequest.SENSOR_SENSITIVITY,
-                        manualIso.coerceIn(controls.isoMin, controls.isoMax)
-                    )
-                }
+                builder.set(CaptureRequest.SENSOR_EXPOSURE_TIME, manualShutterNs)
+                builder.set(
+                    CaptureRequest.SENSOR_SENSITIVITY,
+                    sModeIso.coerceIn(controls.isoMin, controls.isoMax)
+                )
             }
 
             Mode.M -> {
