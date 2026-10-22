@@ -1524,29 +1524,51 @@ class MainActivity : Activity() {
         updateWheelButtons()
     }
 
+    // ---- S 档曝光：请求读数 / 应用修正 两拍交替，一步到位 ----
+    private var sWantLuma = false
+    private var sApplyAt = 0L
+    private var sIdleAt = 0L
+
     /**
-     * S 档软件 ISO 微调 —— 就是改测光模式之前那套能用的逻辑：
-     * 每 800ms 看一次中心区亮度，误差超过 ±12% 才动，每次最多 1/3 档。
-     * 慢，但稳：不抢重复请求、不震荡、不卡。
+     * S 档曝光调整。
+     *
+     * 之前是"每 800ms 走 1/3 档"，从差 2 档要爬 4 次、三秒多，而且每次都触发一次
+     * `glReadPixels` 同步读回 —— 看起来就是一卡一卡的。
+     *
+     * 现在改成两拍交替 + 一步到位：
+     *  第 1 拍：请求读一次亮度（只是打个标记）
+     *  第 2 拍：拿到读数，直接反算 ISO（luma 和 ISO 是线性关系，一次就能算准）
+     *  然后等 220ms 让它生效，再测一次确认；误差 < 0.12 档就收工
+     * 收敛完成后降到 1.2 秒采一次，画面不再有周期性顿感。
      */
-    private fun adjustSIfNeeded() {
+    private fun sExposureTick() {
         val c = camera.controls
         if (!c.hasManual || camera.aeLocked) return
-        preview.requestLuma()
+        val now = android.os.SystemClock.uptimeMillis()
+        if (now - sApplyAt < 180L) return          // 等上一次改完生效（ISO 生效约 2~3 帧）
+
+        if (!sWantLuma) {
+            // 一直保持采样（约每秒 7 次）：换场景/转视角时才能第一时间发现并跟上。
+            // 只读 64×48 的一小块，开销远小于一次预览帧，实测不影响帧率。
+            preview.requestLuma()
+            sWantLuma = true
+            return
+        }
+        sWantLuma = false
+        sIdleAt = now
+
         val luma = preview.lastLuma
         if (luma <= 0.02f) return
         val ev = evFromValue(evDial.value)
         val target = (0.45f * Math.pow(2.0, ev.toDouble())).toFloat().coerceIn(0.10f, 0.90f)
-        val ratio = target / luma
-        if (ratio < 0.88f || ratio > 1.14f) {
-            val gain = Math.pow(ratio.toDouble(), 0.45).toFloat().coerceIn(0.8f, 1.25f)
-            val cur = camera.sModeIso
-            val next = (cur * gain).toInt().coerceIn(c.isoMin, c.isoMax)
-            if (next != cur) {
-                camera.setSModeIso(next)
-                updateWheelButtons()
-            }
-        }
+        val err = (Math.log((target / luma).toDouble()) / Math.log(2.0)).toFloat()
+        if (Math.abs(err) < 0.12f) return
+        val next = (camera.sModeIso * Math.pow(2.0, err.toDouble()))
+            .toInt().coerceIn(c.isoMin, c.isoMax)
+        if (next == camera.sModeIso) return
+        camera.setSModeIso(next)
+        sApplyAt = now
+        isoBtn.text = "ISO " + next
     }
 
     private inner class MeterServo : Runnable {
@@ -1558,14 +1580,10 @@ class MainActivity : Activity() {
                 return
             }
             when (camera.mode) {
-                // S 档：800ms 一次慢速微调（改造之前的做法）
+                // S 档：两拍交替，一步到位
                 CameraEngine.Mode.S -> {
-                    val now = android.os.SystemClock.uptimeMillis()
-                    if (now - lastSAdjustAt >= 800L) {
-                        lastSAdjustAt = now
-                        adjustSIfNeeded()
-                    }
-                    ui.postDelayed(this, 250)
+                    sExposureTick()
+                    ui.postDelayed(this, 70)
                     return
                 }
 

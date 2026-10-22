@@ -487,7 +487,8 @@ class CameraEngine(private val context: Context) {
 
     /** 对象移动/场景变化后重新触发一次连续对焦 */
     fun nudgeAf() {
-        if (focusMode != Focus.AF_C) return
+        // 只有 AF-S 需要"补一次触发"；AF-C 靠连续算法自己跟，发 START 反而会打断它
+        if (focusMode != Focus.AF_S) return
         afTrigger = CaptureRequest.CONTROL_AF_TRIGGER_START
         reapply(immediate = true)
     }
@@ -585,7 +586,7 @@ class CameraEngine(private val context: Context) {
 
     /** 对焦模式：AF-S 单次、AF-C 连续、MF 手动锁焦 */
     private fun applyFocus(builder: CaptureRequest.Builder) {
-        // 点击对焦落下的区域：AF-S / AF-C 都生效，MF 忽略
+        // 对焦区域：AF-S / AF-C 都生效，MF 忽略
         if (focusMode != Focus.MF) {
             afRegion?.let {
                 builder.set(
@@ -597,9 +598,14 @@ class CameraEngine(private val context: Context) {
                         )
                     )
                 )
-            }
-            // 触发位跟着 afTrigger 走：置 START 的那一条请求会真正触发一次扫描
-            builder.set(CaptureRequest.CONTROL_AF_TRIGGER, afTrigger)
+            } ?: builder.set(CaptureRequest.CONTROL_AF_REGIONS, null)
+            // 连续对焦必须一直发 IDLE：
+            // CONTINUOUS_* 模式下 START 会打断算法自己的扫描循环，有些 HAL 会因此退回
+            // "单次对焦后就锁死"，表现就是 AF-C 不跟焦。只有 AF-S 才需要 START。
+            builder.set(
+                CaptureRequest.CONTROL_AF_TRIGGER,
+                if (focusMode == Focus.AF_S) afTrigger else CaptureRequest.CONTROL_AF_TRIGGER_IDLE
+            )
         }
         when (focusMode) {
             Focus.AF_S -> {
