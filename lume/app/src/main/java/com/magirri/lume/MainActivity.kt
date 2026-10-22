@@ -577,8 +577,7 @@ class MainActivity : Activity() {
         )
 
         // 测光模式：参照电影机曝光表的测光区域思路（点测 / 中央重点 / 多区）
-        // 曝光锁定（AE-L）：这台设备的测光区域与曝光补偿都不可用，
-        // 与其留个假按钮，不如给一个真正管用的锁定开关
+        // 曝光锁定（AE-L）
         meterBtn = pressable(TextView(this).apply {
             text = "AE-L"
             setTextColor(Color.WHITE)
@@ -1609,7 +1608,7 @@ class MainActivity : Activity() {
 
             when (camera.mode) {
                 CameraEngine.Mode.AUTO -> {
-                    // 自动测光交给相机自己的 AE（本机不支持曝光补偿微调）
+                    // 自动曝光交给相机自己的 AE
                     if (autoOffsetDead) {
                         ui.postDelayed(this, 200)
                         return
@@ -1625,9 +1624,9 @@ class MainActivity : Activity() {
                         val moved = Math.abs(luma - lastLumaSeen)
                         stall = if (moved < 0.006f) stall + 1 else 0
                         if (stall > 8) {
+                            // 画面不随补偿变化：静默退回，不打扰用户
                             autoOffsetDead = true
                             camera.setAeOffset(0f)
-                            showStatus("这台设备不支持曝光补偿微调，点测仅用于测光提示")
                         }
                     } else {
                         stall = 0
