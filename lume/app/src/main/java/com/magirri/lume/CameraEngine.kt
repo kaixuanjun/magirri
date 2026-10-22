@@ -188,13 +188,33 @@ class CameraEngine(private val context: Context) {
                 onAppliedZoom?.invoke(az)
             }
 
+            // 连续对焦掉焦太久（>1.2s 没 PASSIVE_FOCUSED）就补一次触发
+            if (focusMode == Focus.AF_C) {
+                val st2 = result.get(CaptureResult.CONTROL_AF_STATE)
+                val focused = st2 == CaptureResult.CONTROL_AF_STATE_PASSIVE_FOCUSED ||
+                    st2 == CaptureResult.CONTROL_AF_STATE_FOCUSED_LOCKED
+                if (focused) {
+                    afLostSince = 0L
+                } else {
+                    val now = android.os.SystemClock.uptimeMillis()
+                    if (afLostSince == 0L) afLostSince = now
+                    else if (now - afLostSince > 1200L && afTrigger == CaptureRequest.CONTROL_AF_TRIGGER_IDLE) {
+                        afLostSince = now
+                        afTrigger = CaptureRequest.CONTROL_AF_TRIGGER_START
+                        reapply()
+                    }
+                }
+            }
             // 一次 AF 扫描结束后把触发位复位，否则重复请求会一直重启对焦
             if (afTrigger == CaptureRequest.CONTROL_AF_TRIGGER_START) {
                 val st = result.get(CaptureResult.CONTROL_AF_STATE)
-                if (st == CaptureResult.CONTROL_AF_STATE_FOCUSED_LOCKED ||
+                val done = st == CaptureResult.CONTROL_AF_STATE_FOCUSED_LOCKED ||
                     st == CaptureResult.CONTROL_AF_STATE_NOT_FOCUSED_LOCKED ||
-                    st == CaptureResult.CONTROL_AF_STATE_INACTIVE
-                ) {
+                    st == CaptureResult.CONTROL_AF_STATE_INACTIVE ||
+                    st == CaptureResult.CONTROL_AF_STATE_PASSIVE_SCAN ||
+                    st == CaptureResult.CONTROL_AF_STATE_PASSIVE_FOCUSED ||
+                    st == CaptureResult.CONTROL_AF_STATE_PASSIVE_UNFOCUSED
+                if (done) {
                     afTrigger = CaptureRequest.CONTROL_AF_TRIGGER_IDLE
                     reapply()
                 }
@@ -462,6 +482,16 @@ class CameraEngine(private val context: Context) {
         onLensSwitched?.invoke()
     }
 
+    /** AF-C 掉焦计时：太久没合焦就补一次触发 */
+    private var afLostSince = 0L
+
+    /** 对象移动/场景变化后重新触发一次连续对焦 */
+    fun nudgeAf() {
+        if (focusMode != Focus.AF_C) return
+        afTrigger = CaptureRequest.CONTROL_AF_TRIGGER_START
+        reapply(immediate = true)
+    }
+
     /** 当前镜头在列表里的下标 */
     fun lensIndex(): Int = lenses.indexOfFirst { it.id == activeLensId }.coerceAtLeast(0)
 
@@ -495,6 +525,18 @@ class CameraEngine(private val context: Context) {
         }
     }
     private var lastMeterRect = -1
+
+    /** 曝光锁定（AE-L） */
+    @Volatile var aeLocked = false
+
+    fun setAeLock(on: Boolean) {
+        if (on == aeLocked) return
+        aeLocked = on
+        Log.i(TAG, if (on) "曝光锁定 ON" else "曝光锁定 OFF")
+        aePrecapture = !on && mode == Mode.AUTO
+        aePrecaptureAt = android.os.SystemClock.uptimeMillis()
+        reapply(immediate = true)
+    }
 
     fun setMetering(mode: Int) {
         if (mode == meteringMode) return
@@ -567,9 +609,11 @@ class CameraEngine(private val context: Context) {
                 )
             }
             Focus.AF_C -> {
+                // CONTINUOUS_PICTURE 是为拍照优化的连续对焦，反应偏慢；
+                // CONTINUOUS_VIDEO 才是为"持续追焦"调的，跟焦更快更稳
                 builder.set(
                     CaptureRequest.CONTROL_AF_MODE,
-                    CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE
+                    CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO
                 )
             }
             Focus.MF -> {
@@ -635,8 +679,7 @@ class CameraEngine(private val context: Context) {
         when (mode) {
             Mode.AUTO -> {
                 builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
-                // 保险：确保 AE 没有被锁在旧结果上（某些 HAL 会保持上次收敛值）
-                builder.set(CaptureRequest.CONTROL_AE_LOCK, false)
+                builder.set(CaptureRequest.CONTROL_AE_LOCK, aeLocked)
                 builder.set(
                     CaptureRequest.CONTROL_AE_PRECAPTURE_TRIGGER,
                     if (aePrecapture) CaptureRequest.CONTROL_AE_PRECAPTURE_TRIGGER_START

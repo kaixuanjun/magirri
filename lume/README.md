@@ -575,3 +575,27 @@ CONVERGED，"有时候成功有时候失败"就是这么来的。
 
 为什么用曝光补偿而不是只靠 `CONTROL_AE_REGIONS`：区域只是"告诉相机按哪块测"，
 不保证重新收敛，很多 ROM 直接忽略；补偿是**一定会生效**的旋钮，闭环才稳。
+
+## 测光按钮 → 曝光锁定（AE-L）
+
+本机的 `CONTROL_AE_REGIONS` 和 `CONTROL_AE_EXPOSURE_COMPENSATION` **都不生效**
+（闭环跑起来后亮度纹丝不动，被防饱和逻辑判定为不支持），所以测光模式那三个档位在这台机器上是假的。
+与其留个假按钮，改成真正管用的 **AE-L**：
+
+- 点一下 → `CONTROL_AE_LOCK = true`，按钮变黄显示「锁定」，曝光不再随画面变化
+- 再点一下 → 解锁回自动，按钮恢复「AE-L」
+- 锁定时实时闭环也不再动参数（S 档的 ISO 调整同样暂停）
+- 点击取景器仍会对焦；锁定状态下提示「对焦 · 曝光已锁」
+
+## AF-C 为什么不灵敏（已修）
+
+三个问题：
+
+1. 用了 `CONTROL_AF_MODE_CONTINUOUS_PICTURE`（为拍照优化的连续对焦，本来就偏慢），
+   改成 **`CONTINUOUS_VIDEO`**（为持续追焦调过，跟焦更快）。
+2. **触发位复位条件写错**：原来只匹配 `FOCUSED_LOCKED / NOT_FOCUSED_LOCKED / INACTIVE`，
+   而连续对焦上报的是 `PASSIVE_SCAN / PASSIVE_FOCUSED / PASSIVE_UNFOCUSED`，
+   于是 `CONTROL_AF_TRIGGER` 一直停在 `START` —— **每一帧都在重启一次扫描**，永远settle不下来，
+   手感就是"迟钝、追不上"。
+3. 补了掉焦自动重触发：连续 1.2s 没有 `PASSIVE_FOCUSED` 就补一次触发；
+   点击取景器时也会额外 `nudgeAf()` 立刻追一次。

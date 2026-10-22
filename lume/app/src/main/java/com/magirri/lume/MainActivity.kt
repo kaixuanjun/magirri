@@ -374,15 +374,8 @@ class MainActivity : Activity() {
                     val uv = previewPointToUv(e.x, e.y)
                     if (uv != null && camera.focusMode != CameraEngine.Focus.MF) {
                         camera.focusAt(uv.first, uv.second)
-                        // 点测光跟着手指：测光圈画在点击处
-                        if (meterMode == 0) {
-                            this@MainActivity.overlay.setMeterSpot(true, e.x, e.y)
-                            // 注意：测光采样是在「已旋转的取景画面」上做的，所以传视图归一化坐标，
-                        // 而不是带旋转/裁切的纹理 UV
-                        preview.setMeterPoint(e.x / v.width, e.y / v.height)
-                        }
-                        // 每次点击都重新测一次，并立刻调整参数
-                        remeterAt()
+                        camera.nudgeAf()     // AF-C 下再补一次触发，跟焦更跟手
+                        if (camera.aeLocked) showStatus("对焦 · 曝光已锁")
                         showFocusRing(e.x, e.y)
                         v.performClick()
                     } else if (uv == null) {
@@ -584,8 +577,10 @@ class MainActivity : Activity() {
         )
 
         // 测光模式：参照电影机曝光表的测光区域思路（点测 / 中央重点 / 多区）
+        // 曝光锁定（AE-L）：这台设备的测光区域与曝光补偿都不可用，
+        // 与其留个假按钮，不如给一个真正管用的锁定开关
         meterBtn = pressable(TextView(this).apply {
-            text = METER_NAMES[1]
+            text = "AE-L"
             setTextColor(Color.WHITE)
             setAutoSizeTextTypeUniformWithConfiguration(
                 9, 12, 1, android.util.TypedValue.COMPLEX_UNIT_SP
@@ -593,15 +588,7 @@ class MainActivity : Activity() {
             gravity = Gravity.CENTER
             setPadding(dp(14), dp(8), dp(14), dp(8))
             background = pill(0x33FFFFFF)
-            setOnClickListener {
-                meterMode = (meterMode + 1) % METER_NAMES.size
-                preview.meterMode = meterMode        // 软件测光（曝光指示 / S 档 ISO）
-                camera.setMetering(meterMode)        // 真正的相机 AE 区域
-                meterBtn.text = METER_NAMES[meterMode]
-                // 注意：这里在 TextView.apply{} 里，裸写的 overlay 会解析成
-                // View.getOverlay()（ViewOverlay），必须显式限定到 Activity 字段
-                this@MainActivity.overlay.setMeterSpot(meterMode == 0)
-            }
+            setOnClickListener { toggleAeLock() }
         })
         camCol.addView(
             meterBtn,
@@ -921,6 +908,16 @@ class MainActivity : Activity() {
             false          // 不吃事件，点击照常触发
         }
         return v
+    }
+
+    /** 曝光锁定开关 */
+    private fun toggleAeLock() {
+        val on = !camera.aeLocked
+        camera.setAeLock(on)
+        meterBtn.text = if (on) "锁定" else "AE-L"
+        meterBtn.setTextColor(if (on) 0xFFFFD400.toInt() else Color.WHITE)
+        meterBtn.background = pill(if (on) 0x66FFD400 else 0x2EFFFFFF)
+        showStatus(if (on) "曝光已锁定" else "曝光自动")
     }
 
     /** 提示消息：写一行，2.5 秒后自动消失（常驻信息不再占屏） */
@@ -1602,12 +1599,17 @@ class MainActivity : Activity() {
                 ui.postDelayed(this, 160)
                 return
             }
+            if (camera.aeLocked) {          // 用户锁了曝光：闭环不许动参数
+                ui.postDelayed(this, 200)
+                return
+            }
             val ev = evFromValue(evDial.value)
             val target = (0.45f * Math.pow(2.0, ev.toDouble())).toFloat().coerceIn(0.06f, 0.95f)
             val err = (Math.log((target / luma).toDouble()) / Math.log(2.0)).toFloat()
 
             when (camera.mode) {
                 CameraEngine.Mode.AUTO -> {
+                    // 自动测光交给相机自己的 AE（本机不支持曝光补偿微调）
                     if (autoOffsetDead) {
                         ui.postDelayed(this, 200)
                         return
