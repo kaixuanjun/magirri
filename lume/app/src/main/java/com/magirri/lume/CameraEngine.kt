@@ -898,6 +898,39 @@ class CameraEngine(private val context: Context) {
         }
     }
 
+    /**
+     * 只重提曝光参数，**不动 AF**。
+     *
+     * 爬升时每帧要下发一次，如果走 [reapply] 那条路会连 AF 模式/触发位一起重设，
+     * 30 次/秒地打 AF 会让对焦反复重新收敛。所以单独开一条只含曝光的请求。
+     */
+    fun submitExposureOnly() {
+        val cam = device ?: return
+        val s = session ?: return
+        val target = previewSurface ?: return
+        try {
+            val req = cam.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
+                addTarget(target)
+                recordSurface?.let { addTarget(it) }
+                applyZoomAndEv(this)
+            }.build()
+            s.setRepeatingRequest(req, aeSampler, handler)
+        } catch (e: Exception) {
+            Log.w(TAG, "曝光请求失败: ${e.message}")
+        }
+    }
+
+    /** 爬升用：立刻下发，不参与 60ms 合并，保证每一小步都真的送到相机 */
+    fun setSModeIsoInstant(v: Int) {
+        val i = v.coerceIn(controls.isoMin, controls.isoMax)
+        if (i == sModeIso) return
+        sModeIso = i
+        if (mode == Mode.S) {
+            Log.d(TAG, "ISO 步进 " + i + " @" + (android.os.SystemClock.uptimeMillis() % 100000))
+            submitExposureOnly()
+        }
+    }
+
     /** 拍一张，结果从 [onStill] 出来 */
     fun capture() {
         val cam = device ?: return

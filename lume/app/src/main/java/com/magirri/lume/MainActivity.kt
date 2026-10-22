@@ -1532,11 +1532,15 @@ class MainActivity : Activity() {
      * 把 S 档 ISO 从当前值**平滑爬**到目标值。
      *
      * 相机自己的 AE 之所以丝滑，就是因为它每帧都在微调曝光 —— 每帧只差一点点，
-     * 眼睛看到的就是连续渐变。所以这里照做：40ms 一小步、指数插值、约 300ms 走完，
+     * 眼睛看到的就是连续渐变。所以这里照做：**一帧一小步**、指数插值、按曝光量决定总步数，
      * 每一步只差百分之几，过程中**不读回亮度**（读回才是卡顿来源）。
      *
-     * 请求合并（reapply 60ms 合并）会自动把节流控制在 ~16 次/秒，不会把 HAL 打爆。
+     * 走 setSModeIsoInstant 绕开 60ms 合并，否则一半的步会被吞掉，看起来只剩 5 档。
      */
+    /** 爬升用的帧回调：一步只在**画出来的一帧**上推进，人眼看到的就是连续渐变 */
+    private val rampChoreographer by lazy { android.view.Choreographer.getInstance() }
+    private var rampFrameCallback: android.view.Choreographer.FrameCallback? = null
+
     private fun rampIsoTo(target: Int) {
         val c = camera.controls
         val to = target.coerceIn(c.isoMin, c.isoMax)
@@ -1545,31 +1549,40 @@ class MainActivity : Activity() {
 
         val token = ++isoRampToken
         isoRampActive = true
-        val steps = 8                      // 8 步 × 40ms ≈ 320ms
-        var i = 0
 
-        fun step() {
-            if (token != isoRampToken) return        // 被新的目标打断
-            i++
-            val t = i.toFloat() / steps
-            val v = (from * Math.pow(to.toDouble() / from, t.toDouble())).toInt()
-                .coerceIn(c.isoMin, c.isoMax)
-            if (v != camera.sModeIso) {
-                camera.setSModeIso(v)
-                isoBtn.text = "ISO " + v
-            }
-            if (i < steps) {
-                ui.postDelayed({ step() }, 40L)
-            } else {
-                if (camera.sModeIso != to) {
-                    camera.setSModeIso(to)
-                    isoBtn.text = "ISO $to"
+        // 步数按"曝光量差"算：每步约 3%（对数刻度）。
+        // 小幅修正 3 步就收，1.3 档这种大跳会铺成十几步。
+        val span = Math.abs(Math.log(to.toDouble() / from.toDouble()))
+        val steps = Math.round(span / 0.03).toInt().coerceIn(3, 32)
+
+        rampFrameCallback?.let { rampChoreographer.removeFrameCallback(it) }
+        var i = 0
+        val cb = object : android.view.Choreographer.FrameCallback {
+            override fun doFrame(frameTimeNanos: Long) {
+                if (token != isoRampToken) return          // 被新目标打断
+                i++
+                val t = i.toFloat() / steps
+                val v = (from * Math.pow(to.toDouble() / from, t.toDouble())).toInt()
+                    .coerceIn(c.isoMin, c.isoMax)
+                if (v != camera.sModeIso) {
+                    camera.setSModeIsoInstant(v)           // 不合并，每帧都真的下发
+                    isoBtn.text = "ISO " + v
                 }
-                isoRampActive = false
-                sApplyAt = android.os.SystemClock.uptimeMillis()   // 爬完再等它生效
+                if (i < steps) {
+                    rampChoreographer.postFrameCallback(this)
+                } else {
+                    if (camera.sModeIso != to) {
+                        camera.setSModeIsoInstant(to)
+                        isoBtn.text = "ISO $to"
+                    }
+                    rampFrameCallback = null
+                    isoRampActive = false
+                    sApplyAt = android.os.SystemClock.uptimeMillis()   // 爬完再等它生效
+                }
             }
         }
-        ui.postDelayed({ step() }, 40L)
+        rampFrameCallback = cb
+        rampChoreographer.postFrameCallback(cb)
     }
 
     // ---- S 档曝光 ----    // ---- S 档曝光 ----
