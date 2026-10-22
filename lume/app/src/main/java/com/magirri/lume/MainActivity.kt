@@ -175,7 +175,6 @@ class MainActivity : Activity() {
         buildUi()
         ui.postDelayed(perfTicker, 1500)
 
-        ui.post(exposureLoop)
 
         if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(
@@ -1531,56 +1530,36 @@ class MainActivity : Activity() {
      * 每 600ms 取一次取景器中心亮度，只在明显偏离目标时才动，每步最多 1/3 档：
      * 之前 300ms 无条件重算，ISO 在相邻档之间来回跳，画面就是一顿一顿的。
      */
+    /** 上一次调 ISO 的时间：改完要等它就绪，别连着改，否则来回过冲就是"忽亮忽暗" */
+    private var lastIsoAdjustAt = 0L
+
     /**
-     * S 档：按当前取景亮度调 ISO。
-     * @param instant 点击测光时用：直接一次到位（不等小步收敛）
-     * @return 是否离目标还很远（决定下一轮间隔）
+     * S 档唯一的 ISO 调整入口。
+     *
+     * 之前有三处同时在调 ISO（曝光轮询、实时闭环、点击补枪），增益还各不相同，
+     * 互相打架 → 画面忽亮忽暗。现在只留这一个函数。
      */
-    private fun correctSExposure(luma: Float, instant: Boolean): Boolean {
+    private fun adjustSIfNeeded(luma: Float, force: Boolean) {
         val c = camera.controls
-        if (luma <= 0.02f || !c.hasManual) return false
+        if (!c.hasManual || luma <= 0.02f) return
+        if (camera.aeLocked) return
+        val now = android.os.SystemClock.uptimeMillis()
+        // 上一次改完至少等 260ms 再改（ISO 生效要几帧，抢着改必然过冲）
+        if (!force && now - lastIsoAdjustAt < 260L) return
+
         val ev = evFromValue(evDial.value)
         val target = (0.45f * Math.pow(2.0, ev.toDouble())).toFloat().coerceIn(0.10f, 0.90f)
-        val ratio = target / luma
-        val far = ratio < 0.62f || ratio > 1.6f
-        if (far || ratio < 0.88f || ratio > 1.14f) {
-            val gain = Math.pow(ratio.toDouble(), if (instant) 1.0 else if (far) 0.9 else 0.45)
-                .toFloat()
-                .coerceIn(if (instant) 0.05f else if (far) 0.25f else 0.8f,
-                    if (instant) 20f else if (far) 4f else 1.25f)
-            val cur = camera.sModeIso
-            val next = (cur * gain).toInt().coerceIn(c.isoMin, c.isoMax)
-            if (next != cur) {
-                camera.setSModeIso(next)
-                updateWheelButtons()
-                Log.i(TAG, "点测光调 ISO $cur -> $next（亮度 $luma，目标 $target）")
-            }
-        }
-        return far
+        val err = (Math.log((target / luma).toDouble()) / Math.log(2.0)).toFloat()
+        if (Math.abs(err) < 0.12f) return                      // 死区 0.12 档
+        val step = err.coerceIn(-0.6f, 0.6f)                   // 单次最多 0.6 档
+        val next = (camera.sModeIso * Math.pow(2.0, step.toDouble()))
+            .toInt().coerceIn(c.isoMin, c.isoMax)
+        if (next == camera.sModeIso) return
+        camera.setSModeIso(next)
+        lastIsoAdjustAt = now
+        updateWheelButtons()
     }
 
-    /**
-     * 点一下取景器：重新测光 + 立刻把参数调整到位（不等轮询）。
-     * AUTO 档靠 AE 预拍重新收敛；S 档直接按新测光点的亮度算 ISO；M 档只更新曝光指示。
-     */
-    private fun remeterAt() {
-        ui.removeCallbacks(spotMeterTask)
-        preview.requestLuma()
-        // 等下一帧渲染完再读亮度（requestLuma 只是打标记），然后立刻推一次
-        ui.postDelayed(spotMeterTask, 70)
-    }
-
-    /**
-     * 常驻的实时测光闭环（≈8Hz）。
-     *
-     * 原生相机的点测光是"一直盯着中心那一小块"：手机一晃、那里明暗一变，曝光立刻跟上。
-     * 之前只在点击时测一次，所以晃手机没反应、点击又时灵时不灵。
-     *
-     *  - AUTO：不能直接改 ISO/快门（AE 管着），所以用 AE 曝光补偿当"遥控杆"，
-     *    自己测点测区的亮度，闭环算偏移量（不覆盖用户拨盘上的 EV）
-     *  - S   ：直接调 ISO
-     *  - M   ：只更新曝光指示
-     */
     private inner class MeterServo : Runnable {
         private var lastLumaSeen = -1f
         private var stall = 0
@@ -1634,17 +1613,7 @@ class MainActivity : Activity() {
                     lastLumaSeen = luma
                 }
 
-                CameraEngine.Mode.S -> {
-                    if (Math.abs(err) > 0.06f && c.hasManual) {
-                        val cur = camera.sModeIso
-                        val next = (cur * Math.pow(2.0, (err * 0.6f).toDouble()))
-                            .toInt().coerceIn(c.isoMin, c.isoMax)
-                        if (next != cur) {
-                            camera.setSModeIso(next)
-                            updateWheelButtons()
-                        }
-                    }
-                }
+                CameraEngine.Mode.S -> adjustSIfNeeded(luma, force = false)
 
                 CameraEngine.Mode.M -> {
                     val dev = (Math.log(luma / 0.45) / Math.log(2.0)).toFloat().coerceIn(-2f, 2f)
@@ -1661,11 +1630,7 @@ class MainActivity : Activity() {
     private inner class SpotMeterTask : Runnable {
         override fun run() {
             when (camera.mode) {
-                CameraEngine.Mode.S -> {
-                    correctSExposure(preview.lastLuma, instant = true)
-                    preview.requestLuma()
-                    ui.postDelayed(this, 120)   // 再补一枪，抵消一次读数的抖动
-                }
+                CameraEngine.Mode.S -> adjustSIfNeeded(preview.lastLuma, force = true)
                 CameraEngine.Mode.AUTO -> {
                     // 点击后立刻按新测光点推一次 AE 补偿
                     val luma = preview.lastLuma
@@ -1691,40 +1656,6 @@ class MainActivity : Activity() {
     }
 
     private val spotMeterTask = SpotMeterTask()
-
-    private val exposureLoop = object : Runnable {
-        override fun run() {
-            // 用户正在拨轮子时先让开：一边拖一边改 ISO 会互相打架，画面看着就是卡
-            if (wheels.any { it.isDragging }) {
-                ui.postDelayed(this, 250)
-                return
-            }
-            val c = camera.controls
-            when (camera.mode) {
-                CameraEngine.Mode.S -> {
-                    preview.requestLuma()
-                    val far = correctSExposure(preview.lastLuma, false)
-                    // 离目标远的时候 300ms 一次，收敛后回到 800ms
-                    ui.postDelayed(this, if (far) 300 else 800)
-                    return
-                }
-
-                CameraEngine.Mode.M -> {
-                    preview.requestLuma()
-                    val luma = preview.lastLuma
-                    if (luma > 0.02f) {
-                        val dev = (Math.log(luma / 0.45) / Math.log(2.0)).toFloat()
-                            .coerceIn(-2f, 2f)
-                        evDial.value = ((dev + 2f) / 4f).coerceIn(0f, 1f)
-                        updateWheelButtons()
-                    }
-                }
-
-                CameraEngine.Mode.AUTO -> Unit
-            }
-            ui.postDelayed(this, 800)
-        }
-    }
 
     /** 相机就绪后，按这台机器支持的能力初始化拨盘 */
     private fun setupDials(c: CameraEngine.Controls) {
