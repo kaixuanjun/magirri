@@ -11,8 +11,8 @@ android {
         applicationId = "com.magirri.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 4
-        versionName = "2.0.2"
+        versionCode = 3
+        versionName = "2.0.1"
         // 只保留 arm64：手机端不需要 x86
         ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }
     }
