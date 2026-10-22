@@ -62,6 +62,15 @@ class MainActivity : Activity() {
     private var levelOn = false
     private var gridOn = false
     private var assistRows: Map<String, TextView> = emptyMap()
+
+    // ---- 关于 / 检查更新 ----
+    private var aboutVersionValue: TextView? = null
+    private var aboutCommitValue: TextView? = null
+    private var aboutCheckValue: TextView? = null
+    private var aboutCheckHint: TextView? = null
+    private var checkingUpdate = false
+    /** 远端有更新时的 Release 页面，点一下就能跳转 */
+    private var updateUrl: String? = null
     private var menuAnimGen = 0
     private var lensIndexNow = 0
     private lateinit var settingsPanel: View
@@ -1090,7 +1099,23 @@ class MainActivity : Activity() {
         show.animate().alpha(1f).setDuration(200).start()
     }
 
+    /** 本机版本号 / 版本代码 */
+    private fun localVersionName(): String = try {
+        packageManager.getPackageInfo(packageName, 0).versionName ?: "?"
+    } catch (e: Exception) {
+        "?"
+    }
+
+    private fun localVersionCode(): Long = try {
+        val pi = packageManager.getPackageInfo(packageName, 0)
+        if (android.os.Build.VERSION.SDK_INT >= 28) pi.longVersionCode else pi.versionCode.toLong()
+    } catch (e: Exception) {
+        0L
+    }
+
     private fun refreshSettings() {
+        aboutVersionValue?.text = localVersionName() + " (" + localVersionCode() + ")"
+        aboutCommitValue?.text = BuildConfig.GIT_COMMIT
         ratioValue.text = RATIO_NAMES[ratioIndex]
         resValue.text = RES_NAMES[resIndex]
         fpsValue.text = FPS_NAMES[fpsIndex]
@@ -1168,6 +1193,7 @@ class MainActivity : Activity() {
         }
         val catShoot = category("拍摄")
         val catAssist = category("辅助")
+        val catAbout = category("关于")
         body.addView(leftCol, LinearLayout.LayoutParams(dp(150), ViewGroup.LayoutParams.MATCH_PARENT)
             .apply { rightMargin = dp(10) })
 
@@ -1175,6 +1201,10 @@ class MainActivity : Activity() {
         val rightWrap = FrameLayout(this)
         val shootPage = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         val assistPage = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+        }
+        val aboutPage = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             visibility = View.GONE
         }
@@ -1287,6 +1317,76 @@ class MainActivity : Activity() {
             setPadding(0, dp(10), 0, 0)
         })
 
+        // ---- 关于页：软件名称 / 开发者 / 版本 / 提交 / 检查更新 ----
+        fun infoRow(label: String): TextView {
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(0, dp(10), 0, dp(10))
+            }
+            row.addView(TextView(this).apply {
+                text = label
+                setTextColor(0xCCCCCCCC.toInt())
+                textSize = 13f
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            val value = TextView(this).apply {
+                setTextColor(Color.WHITE)
+                textSize = 13f
+                gravity = Gravity.END
+            }
+            row.addView(value)
+            aboutPage.addView(row, LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+            ))
+            aboutPage.addView(divider(0x1FFFFFFF), LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(1)
+            ))
+            return value
+        }
+
+        infoRow("软件名称").text = "MAGIRRI Lume"
+        infoRow("开发者").text = "kaixuanjun"
+        aboutVersionValue = infoRow("版本")
+        aboutCommitValue = infoRow("提交")
+
+        val checkRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, dp(10), 0, dp(10))
+            isClickable = true
+            setOnClickListener { onCheckUpdateTap() }
+        }
+        checkRow.addView(TextView(this).apply {
+            text = "检查更新"
+            setTextColor(Color.WHITE)
+            textSize = 13f
+        }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        aboutCheckValue = TextView(this).apply {
+            text = "点按检查"
+            setTextColor(0xCCFFFFFF.toInt())
+            textSize = 13f
+            gravity = Gravity.END
+        }
+        checkRow.addView(aboutCheckValue)
+        aboutPage.addView(checkRow, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+        ))
+        aboutPage.addView(divider(0x1FFFFFFF), LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, dp(1)
+        ))
+
+        aboutCheckHint = TextView(this).apply {
+            text = "同时比对版本号与最新提交"
+            setTextColor(0x4DFFFFFF)
+            textSize = 10f
+            setPadding(0, dp(10), 0, 0)
+        }
+        aboutPage.addView(aboutCheckHint)
+
+        rightWrap.addView(aboutPage, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT
+        ))
+
         rightWrap.addView(shootPage, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT
         ))
@@ -1302,16 +1402,31 @@ class MainActivity : Activity() {
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT
         ))
 
-        // 一级菜单切换
-        catShoot.setOnClickListener {
-            if (shootPage.visibility != View.VISIBLE) crossFade(shootPage, assistPage)
-            setCategoryBar(catShoot, catAssist)
+        // 一级菜单切换（三页共用一套淡入淡出）
+        val allPages = listOf(shootPage, assistPage, aboutPage)
+        val allCats = listOf(catShoot, catAssist, catAbout)
+        fun selectCategory(sel: LinearLayout, page: View) {
+            for (p in allPages) {
+                if (p === page) {
+                    if (p.visibility != View.VISIBLE) {
+                        p.visibility = View.VISIBLE
+                        p.alpha = 0f
+                        p.animate().alpha(1f).setDuration(200).start()
+                    }
+                } else if (p.visibility == View.VISIBLE) {
+                    p.animate().cancel()
+                    p.animate().alpha(0f).setDuration(110).withEndAction {
+                        p.visibility = View.GONE
+                        p.alpha = 1f
+                    }.start()
+                }
+            }
+            setCategoryBar(sel, *allCats.filter { it !== sel }.toTypedArray())
         }
-        catAssist.setOnClickListener {
-            if (assistPage.visibility != View.VISIBLE) crossFade(assistPage, shootPage)
-            setCategoryBar(catAssist, catShoot)
-        }
-        setCategoryBar(catShoot, catAssist)
+        catShoot.setOnClickListener { selectCategory(catShoot, shootPage) }
+        catAssist.setOnClickListener { selectCategory(catAssist, assistPage) }
+        catAbout.setOnClickListener { selectCategory(catAbout, aboutPage) }
+        setCategoryBar(catShoot, catAssist, catAbout)
 
         (window.decorView as FrameLayout).addView(
             root,
@@ -1323,10 +1438,154 @@ class MainActivity : Activity() {
         assistRows = assistValues
     }
 
-    /** 一级菜单选中态：选中的竖条白色，另一个透明 */
-    private fun setCategoryBar(sel: LinearLayout, other: LinearLayout) {
+    // ======================================================================
+    //  关于 → 检查更新
+    // ======================================================================
+
+    private fun onCheckUpdateTap() {
+        // 已经查到有更新时，再点一下直接打开 Release 页面
+        val url = updateUrl
+        if (url != null && !checkingUpdate) {
+            try {
+                startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url)))
+            } catch (_: Exception) {
+            }
+            return
+        }
+        checkUpdate()
+    }
+
+    /**
+     * 检查更新：**同时**比对版本号（Release tag）与主干最新提交。
+     *
+     * 只比 tag 是不够的——有时候小改动不会改版本号，App 会一直显示"已是最新"。
+     * 所以还要看 GitHub 上 main 分支最新的 commit sha 是否和本机编进去的一致。
+     */
+    private fun checkUpdate() {
+        if (checkingUpdate) return
+        checkingUpdate = true
+        updateUrl = null
+        aboutCheckValue?.text = "检查中…"
+        aboutCheckHint?.text = "正在连接 GitHub…"
+
+        Thread {
+            val localName = localVersionName()
+            val localCommit = BuildConfig.GIT_COMMIT
+            var remoteTag = ""
+            var remoteSha = ""
+            var remoteMsg = ""
+            var remoteDate = ""
+            var releaseUrl = ""
+            var error = ""
+
+            try {
+                val rel = org.json.JSONObject(httpGet("https://api.github.com/repos/" + REPO + "/releases/latest"))
+                remoteTag = rel.optString("tag_name")
+                releaseUrl = rel.optString("html_url")
+            } catch (e: Exception) {
+                error = e.message ?: "网络不通"
+            }
+
+            try {
+                val arr = org.json.JSONArray(
+                    httpGet("https://api.github.com/repos/" + REPO + "/commits?sha=main&per_page=1")
+                )
+                val first = arr.optJSONObject(0)
+                remoteSha = first?.optString("sha") ?: ""
+                val cm = first?.optJSONObject("commit")
+                remoteMsg = cm?.optString("message")?.lineSequence()?.firstOrNull()?.trim() ?: ""
+                remoteDate = cm?.optJSONObject("author")?.optString("date") ?: ""
+            } catch (e: Exception) {
+                if (error.isEmpty()) error = e.message ?: "网络不通"
+            }
+
+            ui.post {
+                checkingUpdate = false
+                val v = aboutCheckValue ?: return@post
+                val hint = aboutCheckHint ?: return@post
+
+                if (error.isNotEmpty() && remoteTag.isEmpty() && remoteSha.isEmpty()) {
+                    v.text = "检查失败"
+                    hint.text = "连不上 GitHub（" + error + "），确认手机有网再试"
+                    return@post
+                }
+
+                val tagNew = remoteTag.isNotEmpty() &&
+                    compareVersion(remoteTag.removePrefix("v"), localName) > 0
+                // 本机编进去的提交 vs GitHub 主干最新提交
+                val commitDiffers = remoteSha.isNotEmpty() && localCommit != "unknown" &&
+                    !remoteSha.startsWith(localCommit.take(7))
+                // 提交号不同时，再用时间判断方向：远端比本机构建还晚 → 真的是新提交
+                val remoteEpoch = try {
+                    java.time.OffsetDateTime.parse(remoteDate).toInstant().epochSecond
+                } catch (e: Exception) {
+                    0L
+                }
+                val remoteNewer = commitDiffers && remoteEpoch > BuildConfig.BUILD_TIME + 120
+                val localNewer = commitDiffers && !remoteNewer
+
+                when {
+                    tagNew -> {
+                        v.text = "有新版本 " + remoteTag
+                        hint.text = "本机 " + localName + "（" + localCommit + "）→ 远端 " +
+                            remoteTag + "（" + remoteSha.take(7) + "），点这一行去下载"
+                        updateUrl = if (releaseUrl.isNotEmpty()) releaseUrl
+                        else "https://github.com/" + REPO + "/releases"
+                    }
+                    remoteNewer -> {
+                        v.text = "有新提交"
+                        hint.text = "远端 " + remoteSha.take(7) + "（" + remoteDate.take(10) + "）· " +
+                            remoteMsg.take(40) + "　本机 " + localCommit
+                        updateUrl = if (releaseUrl.isNotEmpty()) releaseUrl
+                        else "https://github.com/" + REPO + "/commits/main"
+                    }
+                    localNewer -> {
+                        v.text = "已是最新"
+                        hint.text = "本机 " + localCommit + " 比远端 " + remoteSha.take(7) +
+                            " 更新（本地提交通常还没推上去）"
+                    }
+                    else -> {
+                        v.text = "已是最新"
+                        hint.text = "本机 " + localName + "（" + localCommit + "）与远端一致"
+                    }
+                }
+            }
+        }.start()
+    }
+
+    private fun httpGet(url: String): String {
+        val c = java.net.URL(url).openConnection() as java.net.HttpURLConnection
+        c.connectTimeout = 8000
+        c.readTimeout = 10000
+        c.requestMethod = "GET"
+        c.setRequestProperty("Accept", "application/vnd.github+json")
+        c.setRequestProperty("User-Agent", "MAGIRRI-Lume")
+        return try {
+            c.inputStream.bufferedReader().use { it.readText() }
+        } finally {
+            try {
+                c.disconnect()
+            } catch (_: Exception) {
+            }
+        }
+    }
+
+    /** 版本号比较：1.2.10 > 1.2.9；非数字段忽略 */
+    private fun compareVersion(a: String, b: String): Int {
+        val pa = a.split(".", "-", "_").mapNotNull { it.toIntOrNull() }
+        val pb = b.split(".", "-", "_").mapNotNull { it.toIntOrNull() }
+        for (i in 0 until Math.max(pa.size, pb.size)) {
+            val x = pa.getOrElse(i) { 0 }
+            val y = pb.getOrElse(i) { 0 }
+            if (x != y) return x - y
+        }
+        return 0
+    }
+
+    /** 一级菜单选中态：选中的竖条白色，其余透明 */
+    private fun setCategoryBar(sel: LinearLayout, vararg others: LinearLayout) {
         (sel.getChildAt(0) as View).setBackgroundColor(Color.WHITE)
-        (other.getChildAt(0) as View).setBackgroundColor(Color.TRANSPARENT)
+        others.forEach { (it.getChildAt(0) as View).setBackgroundColor(Color.TRANSPARENT) }
     }
 
     /** ‹ › 箭头 */
@@ -2048,6 +2307,8 @@ class MainActivity : Activity() {
     companion object {
         private const val TAG = "arccam"
         private const val REQ_CAMERA = 21
+        /** GitHub 仓库，检查更新用 */
+        private const val REPO = "kaixuanjun/magirri"
 
 
 
