@@ -788,11 +788,17 @@ class GlPreview(
             }
 
             void main() {
-                vec3 src = texture2D(uTex, vUv).rgb;
+                vec3 raw = texture2D(uTex, vUv).rgb;
 
-                // 2D 平铺 LUT：宽 n*n、高 n；r,g 交给硬件线性，b 取两片自己插
+                // 2D 平铺 LUT：宽 n*n、高 n；r,g 交给硬件线性，b 取两片自己插。
+                //
+                // 三个通道都必须先夹到 [0,1]。过曝的地方相机给的是「超白」
+                // （YUV 255 → 展开后 r/g 可能到 1.1），如果不夹，u 坐标会越出当前
+                // 这片 b 切片、串到下一片的 r=0 那一列，红通道瞬间掉到 0.4 ——
+                // 表现就是「取景器里过曝的地方发蓝」，而照片走 CPU 路径夹了所以没事。
                 float n = uLutSize;
-                float bs = clamp(src.b, 0.0, 1.0) * (n - 1.0);
+                vec3 src = clamp(raw, 0.0, 1.0);
+                float bs = src.b * (n - 1.0);
                 float b0 = floor(bs);
                 float b1 = min(b0 + 1.0, n - 1.0);
                 float fbv = bs - b0;
