@@ -32,8 +32,8 @@ python -m vex verify
 
 ```bash
 # 两个 App 的安装包
-adb install -r vex/android/dist/magirri-vex-2.0-debug.apk
-adb install -r lume/dist/magirri-lume-2.0-debug.apk
+adb install -r vex/android/dist/magirri-vex-2.0.1-debug.apk
+adb install -r lume/dist/magirri-lume-2.0.1-debug.apk
 ```
 
 ## 构建

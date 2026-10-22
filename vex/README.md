@@ -7,7 +7,7 @@
 
 | 入口 | 说明 |
 |---|---|
-| **安卓 App（MAGIRRI Vex）** | [`android/`](android/README.md) — 三页界面 + 液态玻璃底栏，装完点两下就出片，默认存到 `相册/MAGIRRI Vex`：`android/dist/magirri-vex-2.0-debug.apk` |
+| **安卓 App（MAGIRRI Vex）** | [`android/`](android/README.md) — 三页界面 + 液态玻璃底栏，装完点两下就出片，默认存到 `相册/MAGIRRI Vex`：`android/dist/magirri-vex-2.0.1-debug.apk` |
 | **桌面命令行** | 本文 —— 走 ffmpeg，10-bit 无损，适合批量 / 高质量交付 |
 
 App 把整条链烘成 33³ LUT 打进 APK，手机只做一次查表；桌面烘成 65³ 交给 ffmpeg 的
@@ -15,7 +15,7 @@ App 把整条链烘成 33³ LUT 打进 APK，手机只做一次查表；桌面�
 
 ```bash
 # 安卓：首页 → 调色页选视频、选风格 → 导出（默认进相册/MAGIRRI Vex）
-adb install -r android/dist/magirri-vex-2.0-debug.apk
+adb install -r android/dist/magirri-vex-2.0.1-debug.apk
 
 # 桌面
 python -m vex export 我的视频.mp4 -o 成片.mp4

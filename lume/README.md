@@ -54,7 +54,7 @@ Camera2 静态帧 → BT.709 有限范围转 RGB → CPU 查同一张 LUT → �
 ## 安装
 
 ```
-adb install -r dist/magirri-lume-2.0-debug.apk
+adb install -r dist/magirri-lume-2.0.1-debug.apk
 ```
 
 最低 Android 8.0（API 26）。
@@ -582,8 +582,8 @@ CONVERGED，"有时候成功有时候失败"就是这么来的。
 （闭环跑起来后亮度纹丝不动，被防饱和逻辑判定为不支持），所以测光模式那三个档位在这台机器上是假的。
 与其留个假按钮，改成真正管用的 **AE-L**：
 
-- 点一下 → `CONTROL_AE_LOCK = true`，按钮变黄显示「锁定」，曝光不再随画面变化
-- 再点一下 → 解锁回自动，按钮恢复「AE-L」
+- 点一下 → `CONTROL_AE_LOCK = true`，按钮**只变色强调**（黄字 + 黄底），文字始终是 `AE-L`
+- 再点一下 → 解锁回自动，按钮恢复常态配色
 - 锁定时实时闭环也不再动参数（S 档的 ISO 调整同样暂停）
 - 点击取景器仍会对焦；锁定状态下提示「对焦 · 曝光已锁」
 

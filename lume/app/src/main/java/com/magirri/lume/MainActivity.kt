@@ -914,7 +914,7 @@ class MainActivity : Activity() {
     private fun toggleAeLock() {
         val on = !camera.aeLocked
         camera.setAeLock(on)
-        meterBtn.text = if (on) "锁定" else "AE-L"
+        // 文字始终是 AE-L，只用颜色/底色强调状态
         meterBtn.setTextColor(if (on) 0xFFFFD400.toInt() else Color.WHITE)
         meterBtn.background = pill(if (on) 0x66FFD400 else 0x2EFFFFFF)
         showStatus(if (on) "曝光已锁定" else "曝光自动")
