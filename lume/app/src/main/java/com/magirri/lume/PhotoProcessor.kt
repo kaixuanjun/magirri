@@ -22,7 +22,9 @@ import java.util.Locale
 object PhotoProcessor {
 
     /** BT.709 有限范围 → 0..1 的 RGB */
-    fun yuvToArgb(image: Image, strength: Float, lut: Lut3D): Triple<IntArray, Int, Int> {
+    fun yuvToArgb(
+        image: Image, strength: Float, lut: Lut3D, gain: Float = 1f
+    ): Triple<IntArray, Int, Int> {
         val w = image.width
         val h = image.height
         val yPlane = image.planes[0]
@@ -71,6 +73,12 @@ object PhotoProcessor {
                     rgb[0] = r + (tmp[0] - r) * strength
                     rgb[1] = g + (tmp[1] - g) * strength
                     rgb[2] = b + (tmp[2] - b) * strength
+                }
+                // 扩展 ISO：超出传感器上限的部分用数字增益补（和取景器保持一致）
+                if (gain != 1f) {
+                    rgb[0] = (rgb[0] * gain).coerceAtMost(1f)
+                    rgb[1] = (rgb[1] * gain).coerceAtMost(1f)
+                    rgb[2] = (rgb[2] * gain).coerceAtMost(1f)
                 }
                 out[y * w + x] = 0xFF shl 24 or
                         ((rgb[0] * 255f).toInt().coerceIn(0, 255) shl 16) or

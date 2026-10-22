@@ -63,6 +63,17 @@ class GlPreview(
     var rightAlign = true
 
     /**
+     * 超出相机硬件最大倍率后，由 GL 再裁一刀补上的倍率（1 = 不裁）。
+     * 相机这一段已经到顶、不再变化，所以两级不会互相对不上。
+     */
+    var extraZoom: Float = 1f
+        set(v) { field = v.coerceIn(1f, 8f) }
+
+    /** 扩展 ISO 用的数字增益（1 = 不加），只作用在成片上，不参与测光 */
+    var digitalGain: Float = 1f
+        set(v) { field = v.coerceIn(1f, 16f) }
+
+    /**
      * 变焦全部在 GL 里做：只改采样 UV 的范围，不碰相机。
      * 之前每次拨动都 setRepeatingRequest 改裁剪区域，管线不停重新收敛，
      * 画面就是一顿一顿的。targetZoom 由 UI 设，zoomNow 每帧向它靠近。
@@ -122,6 +133,7 @@ class GlPreview(
     private var uQuadOffset = 0
     private var uStrength = 0
     private var uExposure = 0
+    private var uGain = 0
     private var uZebra = 0
     private var uPeaking = 0
     private var uTexel = 0
@@ -215,6 +227,7 @@ class GlPreview(
         uQuadOffset = GLES20.glGetUniformLocation(program, "uQuadOffset")
         uStrength = GLES20.glGetUniformLocation(program, "uStrength")
         uExposure = GLES20.glGetUniformLocation(program, "uExposure")
+        uGain = GLES20.glGetUniformLocation(program, "uGain")
         uZebra = GLES20.glGetUniformLocation(program, "uZebra")
         uPeaking = GLES20.glGetUniformLocation(program, "uPeaking")
         uTexel = GLES20.glGetUniformLocation(program, "uTexel")
@@ -593,7 +606,10 @@ class GlPreview(
     private fun measureLuma(): Float {
         if (meterFbo == 0) return -1f
         GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, meterFbo)
-        drawFrame(-rotationDeg * Math.PI.toFloat() / 180f, 1f, 1f, MW, MH, assist = false)
+        drawFrame(
+            -rotationDeg * Math.PI.toFloat() / 180f, 1f, 1f, MW, MH,
+            assist = false, applyGain = false
+        )
         val buf = java.nio.ByteBuffer.allocateDirect(MW * MH * 4)
         GLES20.glReadPixels(0, 0, MW, MH, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, buf)
         GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
@@ -672,6 +688,7 @@ class GlPreview(
         rotationRad: Float, qx: Float, qy: Float, vw: Int, vh: Int,
         sourceTex: Int = -1,
         assist: Boolean = true,
+        applyGain: Boolean = true,
     ) {
         GLES20.glViewport(0, 0, vw, vh)
         GLES20.glClearColor(0f, 0f, 0f, 1f)
@@ -692,12 +709,14 @@ class GlPreview(
         GLES20.glUniform1f(uRotation, rotationRad)
         GLES20.glUniform1f(uStrength, strength)
         GLES20.glUniform1f(uExposure, exposureComp)
+        GLES20.glUniform1f(uGain, if (applyGain) digitalGain else 1f)
         GLES20.glUniform1i(uZebra, if (assist && zebraOn) 1 else 0)
         GLES20.glUniform1i(uPeaking, if (assist && peakingOn) 1 else 0)
         GLES20.glUniform2f(uTexel, 1f / 1280f, 1f / 720f)
         // 变焦只由相机做（CONTROL_ZOOM_RATIO）。两级变焦不可能同帧生效，
         // 每次相机跳一下 GL 就要补一下，画面就是一闪一闪的。这里只做画幅裁切。
-        GLES20.glUniform2f(uTexScale, cropX, cropY)
+        // 相机到顶之后的倍率由这里补：uv 往中心收，等效再裁一刀
+        GLES20.glUniform2f(uTexScale, cropX / extraZoom, cropY / extraZoom)
         GLES20.glUniform2f(uQuadScale, qx, qy)
 
         quad.position(0)
@@ -777,6 +796,7 @@ class GlPreview(
             uniform float uLutSize;
             uniform float uStrength;
             uniform float uExposure;
+            uniform float uGain;
             uniform int uZebra;
             uniform int uPeaking;
             uniform vec2 uTexel;
@@ -837,7 +857,7 @@ class GlPreview(
 
                 // 曝光过渡：传感器 ISO 一步跳变时，这里从"抵消值"缓动回 1.0，
                 // 画面亮度就是连续的
-                col *= uExposure;
+                col *= uExposure * uGain;
                 gl_FragColor = vec4(col, 1.0);
             }
         """

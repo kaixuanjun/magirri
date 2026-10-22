@@ -92,6 +92,8 @@ class MainActivity : Activity() {
 
     /** 当前变焦倍率（GL 数字变焦，相机始终全画幅） */
     private var zoomLevel = 1f
+    /** 界面上的 ISO（可能超过传感器上限，超出部分由 GL 数字增益补） */
+    private var manualIsoUi = 0
 
     /** S 档上一次的 EV，用来算增量补偿 */
     private var lastEv = 0f
@@ -196,9 +198,15 @@ class MainActivity : Activity() {
 
     // ---------- 拨盘取值映射 ----------
 
-    /** 0..1 → 1..maxZoom，取对数：低倍率段手感更细 */
+    /** 变焦上限：相机硬件上限 ×2（最多 30×），超出去的那段由 GL 裁切补 */
+    private fun zoomUiMax(): Float {
+        val hw = camera.controls.maxZoom.coerceAtLeast(1f)
+        return (hw * 2f).coerceIn(hw, 30f)
+    }
+
+    /** 0..1 → 1..上限，取对数：低倍率段手感更细 */
     private fun zoomFromValue(v: Float): Float {
-        val max = camera.controls.maxZoom.coerceAtLeast(1f)
+        val max = zoomUiMax()
         return Math.pow(max.toDouble(), v.toDouble()).toFloat().coerceIn(1f, max)
     }
 
@@ -221,12 +229,13 @@ class MainActivity : Activity() {
         return evIndexFromValue(v) * (if (c.evStep > 0f) c.evStep else 0f)
     }
 
-    /** 手持能用的快门范围：1/15s ~ 1/2000s，和机身范围取交集 */
+    // 快门范围：整体吃机身能力，只做两处收口——最快 1/8000、最慢 1 秒，
+    // 免得轮子上出现 1/1000000 或 30 秒这种没意义的档
     private fun shutterSlowestNs(): Long =
-        maxOf(camera.controls.shutterMinNs, 1_000_000_000L / 15)
+        minOf(camera.controls.shutterMaxNs, 1_000_000_000L)
 
     private fun shutterFastestNs(): Long =
-        minOf(camera.controls.shutterMaxNs, 1_000_000_000L / 2000)
+        maxOf(camera.controls.shutterMinNs, 1_000_000_000L / 8000)
 
     /** 0..1 → 快门（对数刻度，右边越快） */
     private fun shutterNsFromValue(v: Float): Long {
@@ -243,27 +252,43 @@ class MainActivity : Activity() {
         return v.toFloat().coerceIn(0f, 1f)
     }
 
+    /** ISO 上限：传感器上限 ×2（最多 25600），超出的部分用数字增益补 */
+    private fun isoUiMax(): Int {
+        val hw = camera.controls.isoMax
+        return (hw * 2).coerceIn(hw, 25_600)
+    }
+
     /** 0..1 → ISO（对数刻度） */
     private fun isoFromValue(v: Float): Int {
         val c = camera.controls
         val lo = c.isoMin.toDouble().coerceAtLeast(1.0)
-        val hi = c.isoMax.toDouble().coerceAtLeast(lo + 1)
-        return (lo * Math.pow(hi / lo, v.toDouble())).toInt().coerceIn(c.isoMin, c.isoMax)
+        val hi = isoUiMax().toDouble().coerceAtLeast(lo + 1)
+        return (lo * Math.pow(hi / lo, v.toDouble())).toInt().coerceIn(c.isoMin, isoUiMax())
     }
 
     private fun isoValueFromIso(iso: Int): Float {
         val c = camera.controls
         val lo = c.isoMin.toDouble().coerceAtLeast(1.0)
-        val hi = c.isoMax.toDouble().coerceAtLeast(lo + 1)
+        val hi = isoUiMax().toDouble().coerceAtLeast(lo + 1)
         if (iso <= 0) return 0f
         return (Math.log(iso / lo) / Math.log(hi / lo)).toFloat().coerceIn(0f, 1f)
+    }
+
+    /** 写 ISO：传感器吃得下的给相机，超出的部分交给 GL 增益 */
+    private fun applyIso(iso: Int) {
+        val c = camera.controls
+        val hwIso = iso.coerceIn(c.isoMin, c.isoMax)
+        manualIsoUi = iso
+        camera.setIso(hwIso)
+        preview.digitalGain = if (hwIso > 0) (iso.toFloat() / hwIso).coerceIn(1f, 16f) else 1f
     }
 
     /** 快门显示成 1/125、1/60 这种 */
     private fun shutterText(ns: Long): String {
         if (ns <= 0) return "--"
-        return if (ns >= 1_000_000_000L) {
-            String.format("%.0fs", ns / 1_000_000_000.0)
+        // 慢门直接写秒，1/3 这种倒数是看不出来的
+        return if (ns >= 100_000_000L) {
+            String.format("%.1fs", ns / 1_000_000_000.0)
         } else {
             "1/" + Math.round(1_000_000_000.0 / ns)
         }
@@ -432,11 +457,13 @@ class MainActivity : Activity() {
         zoomDial = WheelView(this, "变焦").apply {
             format = { v -> String.format("%.1f×", zoomFromValue(v)) }
             onChange = { v ->
-                // GL 立刻跟手，相机延后 260ms 再追 —— 相机那一步会让 HAL 去换镜头，
-                // 每帧都发会把管线打满（之前变焦卡顿就是这么来的）
-                zoomLevel = zoomFromValue(v)
-                // 只走相机这一级：相机 zoom 连续，拨动多快就跟多快
-                camera.setZoom(zoomLevel)
+                val z = zoomFromValue(v)
+                val hwMax = camera.controls.maxZoom.coerceAtLeast(1f)
+                val camZ = z.coerceAtMost(hwMax)
+                zoomLevel = z
+                // 相机到顶之后画面还要继续推近，这一段由 GL 裁切补
+                preview.extraZoom = z / camZ
+                camera.setZoom(camZ)
                 updateWheelButtons()
             }
         }
@@ -474,7 +501,7 @@ class MainActivity : Activity() {
         isoWheel = WheelView(this, "ISO").apply {
             format = { v -> isoFromValue(v).toString() }
             onChange = { v ->
-                camera.setIso(isoFromValue(v))
+                applyIso(isoFromValue(v))
                 updateWheelButtons()
             }
         }
@@ -818,7 +845,7 @@ class MainActivity : Activity() {
         isoBtn.text = "ISO " + if (camera.mode == CameraEngine.Mode.S) {
             camera.sModeIso
         } else {
-            camera.manualIso
+            if (manualIsoUi > 0) manualIsoUi else camera.manualIso
         }
         mfBtn.text = "对焦 " + focusText(focusDiopters)
 
@@ -1631,7 +1658,7 @@ class MainActivity : Activity() {
         val sn = Math.sin(th).toFloat()
         val rx = px * c - py * sn
         val ry = px * sn + py * c
-        val z = preview.currentZoom.coerceAtLeast(1f)
+        val z = (preview.currentZoom * preview.extraZoom).coerceAtLeast(1f)
         val u = rx * (preview.frameCropX / z) + 0.5f
         val v = ry * (preview.frameCropY / z) + 0.5f
         if (u !in 0f..1f || v !in 0f..1f) return null
@@ -1728,6 +1755,11 @@ class MainActivity : Activity() {
         for (b in listOf(zoomBtn, evBtn, shutterBtn, isoBtn)) b.visibility = View.VISIBLE
 
         // AUTO 全自动：四个都只读（灰、点不开）
+        // 数字增益只在 M 档的手动 ISO 上生效，切走必须撤，否则画面一直偏亮
+        if (mode != CameraEngine.Mode.M) {
+            preview.digitalGain = 1f
+            manualIsoUi = 0
+        }
         val autoMode = mode == CameraEngine.Mode.AUTO
         fun setEnabled(b: TextView, w: WheelView, on: Boolean) {
             b.alpha = if (on) 1f else 0.35f
@@ -1760,7 +1792,9 @@ class MainActivity : Activity() {
 
             CameraEngine.Mode.M -> {
                 shutterWheel.value = shutterValueFromNs(camera.manualShutterNs)
-                isoWheel.value = isoValueFromIso(camera.manualIso)
+                isoWheel.value = isoValueFromIso(
+                    if (manualIsoUi > 0) manualIsoUi else camera.manualIso
+                )
                 // M 档 EV 只是曝光指示器：不能写回 evIndex，也不沿用上一档的值，
                 // 先放在 0，等下一次测光刷新
                 evDial.value = 0.5f
@@ -2229,15 +2263,20 @@ class MainActivity : Activity() {
         work.execute {
             try {
                 val t0 = System.currentTimeMillis()
-                val (argb, w, h) = PhotoProcessor.yuvToArgb(image, strength, lut)
+                val (argb, w, h) = PhotoProcessor.yuvToArgb(
+                    image, strength, lut, preview.digitalGain
+                )
                 image.close()
                 val (rotated0, rw0, rh0) = PhotoProcessor.rotate(argb, w, h, photoRotation())
                 // 按当前画幅居中裁切，和取景器看到的构图一致
                 val (crop0, cw0, ch0) = PhotoProcessor.cropToAspect(
                     rotated0, rw0, rh0, RATIOS[ratioIndex]
                 )
-                // 再按当前变焦倍率裁一刀（预览是 GL 数字变焦，照片要跟着裁才对得上）
-                val (rotated, rw, rh) = PhotoProcessor.cropZoom(crop0, cw0, ch0, zoomLevel)
+                // 相机变焦已经作用在 ImageReader 上了，这里只补 GL 那一段超硬件倍率，
+                // 否则 8× 会被再裁一次，成片只剩很小一块
+                val (rotated, rw, rh) = PhotoProcessor.cropZoom(
+                    crop0, cw0, ch0, preview.extraZoom
+                )
                 val uri = PhotoProcessor.saveJpeg(this, rotated, rw, rh)
                 val ms = System.currentTimeMillis() - t0
                 ui.post {

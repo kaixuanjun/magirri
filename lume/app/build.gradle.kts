@@ -35,8 +35,8 @@ android {
         applicationId = "com.magirri.lume"
         minSdk = 26
         targetSdk = 34
-        versionCode = 5
-        versionName = "2.0.3"
+        versionCode = 6
+        versionName = "2.0.4"
         buildConfigField("String", "GIT_COMMIT", "\"" + gitShortCommit() + "\"")
         // 构建时刻（秒），用来判断"远端提交比本机新"还是"本机比远端新"
         buildConfigField("long", "BUILD_TIME", (System.currentTimeMillis() / 1000).toString() + "L")
