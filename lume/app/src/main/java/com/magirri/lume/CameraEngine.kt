@@ -188,6 +188,15 @@ class CameraEngine(private val context: Context) {
                 onAppliedZoom?.invoke(az)
             }
 
+            // 读回相机实际生效的对焦模式。
+            // CaptureRequest 是整份替换的，请求里漏写 AF 键就会退回默认的连续对焦，
+            // 有了这行日志，一眼就能看出 MF 有没有被别的请求冲掉。
+            val afm = result.get(CaptureResult.CONTROL_AF_MODE)
+            if (afm != null && afm != lastAfModeApplied) {
+                lastAfModeApplied = afm
+                Log.i(TAG, "对焦模式生效: " + afModeName(afm))
+            }
+
             // 连续对焦掉焦太久（>1.2s 没 PASSIVE_FOCUSED）就补一次触发
             if (focusMode == Focus.AF_C) {
                 val st2 = result.get(CaptureResult.CONTROL_AF_STATE)
@@ -434,11 +443,25 @@ class CameraEngine(private val context: Context) {
 
     /** 预览请求：带上当前的变焦和曝光补偿 */
     private fun previewRequest(cam: CameraDevice, target: Surface): CaptureRequest =
+        buildRequest(cam, target, allowAfTrigger = true)
+
+    /**
+     * 构造一条完整的预览请求。
+     *
+     * **CaptureRequest 是整份替换的**：重复请求里没写的键会退回相机默认值
+     * （AF 默认就是连续对焦）。所以不管出于什么目的大请求，都必须把
+     * 对焦、曝光、变焦全套写全，否则等于把没写的部分"重置成默认"。
+     */
+    private fun buildRequest(
+        cam: CameraDevice,
+        target: Surface,
+        allowAfTrigger: Boolean
+    ): CaptureRequest =
         cam.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
             addTarget(target)
             // 录制流和预览同一条请求：一次采集喂两个 surface
             recordSurface?.let { addTarget(it) }
-            applyFocus(this)
+            applyFocus(this, allowAfTrigger)
             applyZoomAndEv(this)
         }.build()
 
@@ -526,6 +549,17 @@ class CameraEngine(private val context: Context) {
         }
     }
     private var lastMeterRect = -1
+    private var lastAfModeApplied = -1
+
+    private fun afModeName(m: Int): String = when (m) {
+        CaptureRequest.CONTROL_AF_MODE_OFF -> "MF(关)"
+        CaptureRequest.CONTROL_AF_MODE_AUTO -> "AF-S"
+        CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO -> "AF-C"
+        CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE -> "自动(默认)"
+        CaptureRequest.CONTROL_AF_MODE_MACRO -> "微距"
+        CaptureRequest.CONTROL_AF_MODE_EDOF -> "EDOF"
+        else -> "未知$m"
+    }
 
     /** 曝光锁定（AE-L） */
     @Volatile var aeLocked = false
@@ -584,8 +618,14 @@ class CameraEngine(private val context: Context) {
         )
     }
 
-    /** 对焦模式：AF-S 单次、AF-C 连续、MF 手动锁焦 */
-    private fun applyFocus(builder: CaptureRequest.Builder) {
+    /**
+     * 对焦模式：AF-S 单次、AF-C 连续、MF 手动锁焦。
+     *
+     * [allowAfTrigger] = false 时只同步"对焦状态"（模式、区域、手动距离），
+     * 不发 START 触发位。给"只想改曝光"的重复请求用——不然每改一次 ISO
+     * 就重启一次 AF 扫描。
+     */
+    private fun applyFocus(builder: CaptureRequest.Builder, allowAfTrigger: Boolean = true) {
         // 对焦区域：AF-S / AF-C 都生效，MF 忽略
         if (focusMode != Focus.MF) {
             afRegion?.let {
@@ -604,7 +644,8 @@ class CameraEngine(private val context: Context) {
             // "单次对焦后就锁死"，表现就是 AF-C 不跟焦。只有 AF-S 才需要 START。
             builder.set(
                 CaptureRequest.CONTROL_AF_TRIGGER,
-                if (focusMode == Focus.AF_S) afTrigger else CaptureRequest.CONTROL_AF_TRIGGER_IDLE
+                if (allowAfTrigger && focusMode == Focus.AF_S) afTrigger
+                else CaptureRequest.CONTROL_AF_TRIGGER_IDLE
             )
         }
         when (focusMode) {
@@ -901,20 +942,16 @@ class CameraEngine(private val context: Context) {
     /**
      * 只重提曝光参数，**不动 AF**。
      *
-     * 爬升时每帧要下发一次，如果走 [reapply] 那条路会连 AF 模式/触发位一起重设，
-     * 30 次/秒地打 AF 会让对焦反复重新收敛。所以单独开一条只含曝光的请求。
+     * 爬升时每帧要下发一次，如果走 [reapply] 那条路会连 AF **触发位**一起重设，
+     * 30 次/秒地打 START 会让对焦反复重新收敛。所以这条请求只同步对焦"状态"，
+     * 不碰触发位——但模式/区域/手动距离必须原样带上，否则 MF 会被冲成连续对焦。
      */
     fun submitExposureOnly() {
         val cam = device ?: return
         val s = session ?: return
         val target = previewSurface ?: return
         try {
-            val req = cam.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
-                addTarget(target)
-                recordSurface?.let { addTarget(it) }
-                applyZoomAndEv(this)
-            }.build()
-            s.setRepeatingRequest(req, aeSampler, handler)
+            s.setRepeatingRequest(buildRequest(cam, target, allowAfTrigger = false), aeSampler, handler)
         } catch (e: Exception) {
             Log.w(TAG, "曝光请求失败: ${e.message}")
         }

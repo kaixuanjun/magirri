@@ -718,6 +718,7 @@ class MainActivity : Activity() {
         startStatusTicker()
         startOverlayTicker()
         ui.postDelayed(meterServo, 600)   // 实时测光闭环
+        startExposureServo()              // S 档逐帧曝光伺服
         // 菜单在启动时就建好并隐藏：首次打开和后面每次走完全一样的代码路径，
         // 不会再出现"第一次没有动画"这种只在首次生效的怪问题
         buildSettingsPanel()
@@ -1592,46 +1593,76 @@ class MainActivity : Activity() {
     private var sEvalAt = 0L
 
     /**
-     * S 档曝光调整。
+     * S 档自动曝光：**逐帧比例伺服**。
      *
-     * 目标：换场景要跟得上，但参数不能改得太勤 —— 每改一次 ISO 都要重新提交一次
-     * `setRepeatingRequest`，HAL 重新配置那一帧就是肉眼看到的"顿挫"。
+     * 之前的做法是「量一次 → 算一个绝对目标 → 爬一整段 → 冷却 250ms → 再量」。
+     * 每爬一段就是一个肉眼可见的"阶段"，几段下来就是一顿一顿的。
      *
-     * 做法：
-     *  - 采样约 4 次/秒（够快，能第一时间发现换场景）
-     *  - 只在这些条件下才真的改 ISO：
-     *      误差 > 0.15 档 且 新 ISO 与当前相差 ≥ 8% 且 距离上次改动 ≥ 400ms
-     *  - 改完等 250ms 生效，期间不评估
-     *  - 一次算出目标值（亮度与 ISO 线性），不爬坡
+     * 现在照相机 AE 的思路做成连续闭环：每一帧只走「剩余误差的一小部分」，
+     * 误差按指数衰减，画面亮度就是一条连续减速的曲线，没有平台期。
+     *
+     *  - 每次最多动 0.12 档（约 8.7% 亮度），相邻两步看不出跳变
+     *  - 比例系数 0.6：误差 1 档时先走 0.12，剩 0.88，再走 0.12……一路收敛
+     *  - 误差 < 0.04 档就停手，避免在死区里来回抽
+     *  - 亮度每 3 帧取一次（glReadPixels 会同步等 GPU，取太勤会掉帧）
      */
-    private fun sExposureTick() {
-        val c = camera.controls
-        if (!c.hasManual || camera.aeLocked) return
-        if (isoRampActive) return                  // 正在爬升，别插一脚
-        val now = android.os.SystemClock.uptimeMillis()
-        if (now - sApplyAt < 250L) return          // 等上一次改完生效
+    private val servoChoreographer by lazy { android.view.Choreographer.getInstance() }
+    private var servoFrame = 0
+    private var servoLumaSeen = -1f
+    /** 已经收敛到场内：此时降低取样频率，省 GPU 同步开销 */
+    private var servoConverged = false
+    private var servoCallback: android.view.Choreographer.FrameCallback? = null
 
-        if (!sWantLuma) {
-            if (now - sEvalAt < 250L) return       // 采样节拍 ~4Hz
-            preview.requestLuma()
-            sWantLuma = true
-            return
+    private fun startExposureServo() {
+        if (servoCallback != null) return
+        val cb = object : android.view.Choreographer.FrameCallback {
+            override fun doFrame(frameTimeNanos: Long) {
+                servoCallback = this
+                servoStep()
+                servoChoreographer.postFrameCallback(this)
+            }
         }
-        sWantLuma = false
-        sEvalAt = now
+        servoCallback = cb
+        servoChoreographer.postFrameCallback(cb)
+    }
+
+    private fun stopExposureServo() {
+        servoCallback?.let { servoChoreographer.removeFrameCallback(it) }
+        servoCallback = null
+    }
+
+    private fun servoStep() {
+        val c = camera.controls
+        if (camera.mode != CameraEngine.Mode.S) return
+        if (!c.hasManual || camera.aeLocked) return
+        if (isoRampActive) return                      // 拨轮正在爬，别插一脚
+
+        servoFrame++
+        // 收敛之后把取样降到 3Hz，省下 glReadPixels 的同步等待；
+        // 一旦误差又变大多半是换了场景，立刻回到 10Hz。
+        val period = if (servoConverged) 10 else 3
+        if (servoFrame % period == 0) preview.requestLuma()
 
         val luma = preview.lastLuma
-        if (luma <= 0.02f) return
+        if (luma <= 0.02f || luma == servoLumaSeen) return
+        servoLumaSeen = luma
+
         val ev = evFromValue(evDial.value)
         val target = (0.45f * Math.pow(2.0, ev.toDouble())).toFloat().coerceIn(0.10f, 0.90f)
         val err = (Math.log((target / luma).toDouble()) / Math.log(2.0)).toFloat()
-        if (Math.abs(err) < 0.15f) return
-        val next = (camera.sModeIso * Math.pow(2.0, err.toDouble()))
+        if (Math.abs(err) < 0.04f) {
+            servoConverged = true
+            return
+        }
+        servoConverged = false
+
+        // 每帧只走误差的一部分，并且单帧不超过 0.08 档
+        val stepStops = (err * 0.6f).coerceIn(-0.12f, 0.12f)
+        val next = (camera.sModeIso * Math.pow(2.0, stepStops.toDouble()))
             .toInt().coerceIn(c.isoMin, c.isoMax)
-        val delta = Math.abs(next - camera.sModeIso).toDouble() / camera.sModeIso.coerceAtLeast(1)
-        if (delta < 0.08) return                   // 太小就别改，省一次请求重设
-        rampIsoTo(next)
-        sApplyAt = now
+        if (next == camera.sModeIso) return
+        camera.setSModeIsoInstant(next)
+        isoBtn.text = "ISO $next"
     }
 
     private inner class MeterServo : Runnable {
@@ -1643,10 +1674,9 @@ class MainActivity : Activity() {
                 return
             }
             when (camera.mode) {
-                // S 档：两拍交替，一步到位
+                // S 档：曝光由逐帧伺服负责，这里不用管
                 CameraEngine.Mode.S -> {
-                    sExposureTick()
-                    ui.postDelayed(this, 120)
+                    ui.postDelayed(this, 500)
                     return
                 }
 
@@ -1984,6 +2014,7 @@ class MainActivity : Activity() {
 
     override fun onPause() {
         super.onPause()
+        stopExposureServo()
         orientation.stop()
         if (recording) stopRecording()
         preview.onPause()
@@ -1992,6 +2023,7 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        startExposureServo()
         orientation.start()
         preview.onResume()
         // GL 表面会在 onResume 后重建，届时 onCameraSurfaceReady 会再回调一次 → 重新开相机
